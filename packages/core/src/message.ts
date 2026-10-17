@@ -1,3 +1,4 @@
+import { parseJsonText } from "./encoding.ts";
 import { parseSubscriptionId } from "./filter.ts";
 import { DEFAULT_CONNECTION_LIMITS, type ConnectionLimits } from "./limits.ts";
 import { utf8ByteLength } from "./utf8.ts";
@@ -46,12 +47,9 @@ export function parseClientMessage(raw: string, limits: Partial<ConnectionLimits
   if (raw.length > maxMessageBytes || utf8ByteLength(raw) > maxMessageBytes) {
     return reject("too-large", `message exceeds ${maxMessageBytes} bytes`);
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return reject("malformed-json", "message is not valid JSON");
-  }
+  const parsed = parseJsonText(raw);
+  if (!parsed.ok) return reject("malformed-json", "message is not valid JSON");
+  const { value } = parsed;
   // NIP-01: client messages "must be JSON arrays".
   if (!Array.isArray(value) || typeof value[0] !== "string") {
     return reject("not-message", "message must be a JSON array that starts with its type");

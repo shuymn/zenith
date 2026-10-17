@@ -53,7 +53,7 @@ export function filterOf(value: unknown): Filter {
 /** A configuration whose owner is `owner`. */
 export function testConfig(owner: string): VaultConfig {
   const result = parseVaultConfig({ OWNER_PUBKEY: owner });
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) throw new Error(result.code);
   return result.config;
 }
 
@@ -64,11 +64,11 @@ export function openStore(
   importers: readonly (readonly [string, readonly number[]])[] = [],
 ): EventStore {
   const opened = EventStore.open(storage, testConfig(owner), 0);
-  if (!opened.ok) throw new Error(`could not open the store: ${opened.error}`);
+  if (!opened.ok) throw new Error(`could not open the store: ${opened.code}`);
   const { store } = opened;
   for (const [pubkey, kinds] of importers) {
     const result = store.addKey(pubkey, { role: "importer", kinds }, 0);
-    if (!result.changed) throw new Error(`could not add an importer: ${result.reason}`);
+    if (!result.ok) throw new Error(`could not add an importer: ${result.code}`);
   }
   return store;
 }
@@ -181,7 +181,7 @@ export const vault = () => env.VAULT.getByName(VAULT_NAME);
 export function withStore<T>(owner: string, callback: (store: EventStore) => T): Promise<T> {
   return runInDurableObject(vault(), (_instance, state) => {
     const opened = EventStore.open(state.storage, testConfig(owner), 0);
-    if (!opened.ok) throw new Error(opened.error);
+    if (!opened.ok) throw new Error(opened.code);
     return callback(opened.store);
   });
 }

@@ -83,6 +83,17 @@ describe("mergeDeployConfig", () => {
       deployFile({ vars: { OWNER_PUBKEY: OWNER, RELAY_URL: "ws://relay.example.com/" } }),
       "RELAY_URL",
     ],
+    // The Worker refuses a relay URL with credentials (parseRelayConfig), so deploying one would leave it unavailable.
+    [
+      "a relay URL with credentials",
+      deployFile({ vars: { OWNER_PUBKEY: OWNER, RELAY_URL: "wss://user:pass@relay.example.com/" } }),
+      "RELAY_URL",
+    ],
+    [
+      "an uppercase hex owner, which the Worker refuses",
+      deployFile({ vars: { OWNER_PUBKEY: "A".repeat(64), RELAY_URL: "wss://relay.example.com/" } }),
+      "OWNER_PUBKEY",
+    ],
     ["a placeholder account id", deployFile({ account_id: "<ACCOUNT_ID>" }), "account_id"],
     [
       "a bucket for another binding",

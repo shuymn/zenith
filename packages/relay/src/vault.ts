@@ -4,6 +4,7 @@
  * in its attachment (RD-3).
  */
 import {
+  bytesToHex,
   canonicalEventJson,
   DEFAULT_CONNECTION_LIMITS,
   formatClosedMessage,
@@ -92,7 +93,7 @@ const PROTECTED_REFUSALS: Record<Exclude<ReadAccess, "owner">, string> = {
 type Opened = { readonly config: RelayConfig; readonly store: EventStore };
 
 /** The result of a backup run: written, or why not. */
-export type BackupRunResult = BackupWriteResult | { readonly ok: false; readonly error: "unavailable" };
+export type BackupRunResult = BackupWriteResult | { readonly ok: false; readonly code: "unavailable" };
 
 export class Vault extends DurableObject<Env> {
   // The store and the configuration, opened on first use; #opened is the only way to reach them.
@@ -167,7 +168,7 @@ export class Vault extends DurableObject<Env> {
    */
   async backup(at: number): Promise<BackupRunResult> {
     const opened = this.#opened();
-    if (opened === undefined) return { ok: false, error: "unavailable" };
+    if (opened === undefined) return { ok: false, code: "unavailable" };
     return writeBackup(this.env.BACKUPS, opened.store.export(), at);
   }
 
@@ -196,14 +197,14 @@ export class Vault extends DurableObject<Env> {
         const result = await this.backup(Date.now());
         return result.ok
           ? { ok: true, op: command.op, id: result.id, events: result.events }
-          : { ok: false, op: command.op, reason: result.error };
+          : { ok: false, op: command.op, reason: result.code };
       }
       case "restore": {
         const read = await readBackup(this.env.BACKUPS, command.backup);
-        if (!read.ok) return { ok: false, op: command.op, reason: read.error };
+        if (!read.ok) return { ok: false, op: command.op, reason: read.code };
         // ST-6, ST-8: the store restores only into an empty vault and merges the allowlist.
         const result = store.restore(read.backup);
-        if (!result.ok) return { ok: false, op: command.op, reason: result.error };
+        if (!result.ok) return { ok: false, op: command.op, reason: result.code };
         const connectionsClosed = result.allowlistChanged ? this.closeAllConnections() : 0;
         return {
           ok: true,
@@ -220,7 +221,7 @@ export class Vault extends DurableObject<Env> {
 
   /** OPS-2: an allowlist operation that changed the allowlist closes every connection. */
   #allowlistChange(op: "add" | "retire" | "revoke", result: AllowlistResult): AdminResult {
-    if (!result.changed) return { ok: false, op, reason: result.reason };
+    if (!result.ok) return { ok: false, op, reason: result.code };
     return { ok: true, op, connectionsClosed: this.closeAllConnections() };
   }
 
@@ -281,7 +282,7 @@ export class Vault extends DurableObject<Env> {
     }
     const result = store.apply(event, now);
     if (!result.ok) {
-      const { message } = toRejectionResponse(result.rejection);
+      const { message } = toRejectionResponse(result.code);
       sendOk(ws, event.id, false, message);
       return;
     }
@@ -389,12 +390,12 @@ export class Vault extends DurableObject<Env> {
     if (this.#state !== undefined) return this.#state;
     const parsed = parseRelayConfig(this.env);
     if (!parsed.ok) {
-      logEvent("zenith.config.invalid", { reason: parsed.error });
+      logEvent("zenith.config.invalid", { reason: parsed.code });
       return undefined;
     }
     const opened = EventStore.open(this.ctx.storage, parsed.config.vault, Math.floor(Date.now() / 1000));
     if (!opened.ok) {
-      logEvent("zenith.store.unavailable", { reason: opened.error });
+      logEvent("zenith.store.unavailable", { reason: opened.code });
       return undefined;
     }
     this.#state = { config: parsed.config, store: opened.store };
@@ -429,8 +430,7 @@ function withoutSubscription(state: ConnectionState, id: string): ConnectionStat
 
 /** 32 random bytes as lowercase hex. */
 function randomChallenge(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
 /** NIP-01: `["OK", <event_id>, <true|false>, <message>]`; without a well-formed id, a NOTICE instead. */

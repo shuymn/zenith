@@ -1,6 +1,7 @@
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { isHex32, isRecord, parseJsonText } from "./encoding.ts";
 import { DEFAULT_EVENT_LIMITS, type EventLimits } from "./limits.ts";
 import { utf8ByteLength } from "./utf8.ts";
 
@@ -60,7 +61,6 @@ export type VerifyEventOptions = {
   limits?: Partial<EventLimits>;
 };
 
-const HEX_32_BYTES = /^[0-9a-f]{64}$/;
 const HEX_64_BYTES = /^[0-9a-f]{128}$/;
 
 /**
@@ -112,13 +112,9 @@ export function verifyEvent(raw: string, options: VerifyEventOptions = {}): Even
   if (raw.length > limits.maxEventBytes || utf8ByteLength(raw) > limits.maxEventBytes) {
     return reject("too-large", `event exceeds ${limits.maxEventBytes} bytes`);
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return reject("malformed-json", "event is not valid JSON");
-  }
-  return verifyParsed(value, limits, options.now);
+  const parsed = parseJsonText(raw);
+  if (!parsed.ok) return reject("malformed-json", "event is not valid JSON");
+  return verifyParsed(parsed.value, limits, options.now);
 }
 
 /**
@@ -137,11 +133,11 @@ export function formatOkMessage(rejection: EventRejection): string {
 function verifyParsed(value: unknown, limits: EventLimits, now: number | undefined): EventVerification {
   if (!isRecord(value)) return reject("not-object", "event is not a JSON object");
   const { id, pubkey, created_at, kind, tags, content, sig } = value;
-  const eventId = typeof id === "string" && HEX_32_BYTES.test(id) ? id : undefined;
+  const eventId = isHex32(id) ? id : undefined;
   const fail = (code: EventRejectionCode, message: string) => reject(code, message, eventId);
 
   if (eventId === undefined) return fail("bad-id", "id must be 64 lowercase hex characters");
-  if (typeof pubkey !== "string" || !HEX_32_BYTES.test(pubkey)) {
+  if (!isHex32(pubkey)) {
     return fail("bad-pubkey", "pubkey must be 64 lowercase hex characters");
   }
   if (typeof sig !== "string" || !HEX_64_BYTES.test(sig)) {
@@ -194,10 +190,6 @@ function verifySignature(sig: string, id: string, pubkey: string): boolean {
   } catch {
     return false;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isIntegerInRange(value: unknown, min: number, max: number): value is number {

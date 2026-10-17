@@ -4,15 +4,9 @@
  * absolute URL, method, body and the current time, and decides who may act with the returned key (OPS-1).
  */
 import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, decodeBase64, decodeUtf8Strict } from "./encoding.ts";
 import { verifyEvent, type VerifiedEvent } from "./event.ts";
 import { DEFAULT_HTTP_AUTH_LIMITS, type HttpAuthLimits } from "./limits.ts";
-
-/**
- * `TextDecoder` is a global of every runtime core runs in (Workers and Node); core's `lib` has no DOM types, so the
- * part used here is declared. `fatal` makes bytes that are not UTF-8 an error instead of U+FFFD.
- */
-declare const TextDecoder: new (label: "utf-8", options: { fatal: true }) => { decode(input: Uint8Array): string };
 
 export const HTTP_AUTH_REJECTION_CODES = [
   "missing",
@@ -51,7 +45,6 @@ const HTTP_AUTH_KIND = 27235;
 /** RFC 7235: `credentials = auth-scheme [ 1*SP ( token68 / ... ) ]`; the scheme is case-insensitive. */
 const CREDENTIALS = /^nostr +([^ ]+)$/i;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}(?:==)?|[A-Za-z0-9+/]{3}=?)?$/;
-const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /**
  * Verifies a NIP-98 `Authorization` header for a request. The event is verified from its decoded text by
@@ -102,25 +95,13 @@ function firstTagValue(event: VerifiedEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
 }
 
-/** Standard base64 (RFC 4648 section 4), padding optional, decoded as UTF-8; undefined when it is neither. */
+/**
+ * Standard base64 (RFC 4648 section 4), padding optional, decoded as UTF-8; undefined when it is neither. The exact form
+ * is checked here because `atob` also accepts whitespace inside the value. A leading byte order mark is dropped, as
+ * TextDecoder does by default.
+ */
 function decodeBase64Utf8(value: string): string | undefined {
   if (value.length % 4 === 1 || !BASE64.test(value)) return undefined;
-  const digits = value.replace(/=+$/, "");
-  const bytes = new Uint8Array(Math.floor((digits.length * 6) / 8));
-  let buffer = 0;
-  let bits = 0;
-  let index = 0;
-  for (const char of digits) {
-    buffer = ((buffer << 6) | BASE64_ALPHABET.indexOf(char)) & 0xffffff;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes[index++] = (buffer >> bits) & 0xff;
-    }
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
+  const bytes = decodeBase64(value);
+  return bytes === undefined ? undefined : decodeUtf8Strict(bytes, { stripBom: true });
 }

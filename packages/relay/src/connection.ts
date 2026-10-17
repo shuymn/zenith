@@ -3,6 +3,7 @@
  * the attachment grants authentication: a connection without one, or with one that does not have this shape, is
  * unauthenticated and has no challenge.
  */
+import { isRecord } from "@zenith/core";
 
 /** The platform refuses attachments over 16 KiB; the relay keeps 1 KiB of margin (RES-1). */
 export const MAX_ATTACHMENT_BYTES = 15 * 1024;
@@ -72,8 +73,4 @@ function parseAttachment(value: unknown): ConnectionState | undefined {
     parsed.push({ id: subscription.id, filters: subscription.filters });
   }
   return { challenge, deadline, authenticated, pubkeys, subscriptions: parsed };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

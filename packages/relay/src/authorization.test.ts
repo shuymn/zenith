@@ -36,7 +36,7 @@ async function withVault<T>(callback: (store: EventStore, storage: DurableObject
 
 function rejectionOf(store: EventStore, event: VerifiedEvent): WriteRejection | undefined {
   const result = store.apply(event, NOW);
-  return result.ok ? undefined : result.rejection;
+  return result.ok ? undefined : result.code;
 }
 
 describe("configuration", () => {
@@ -47,8 +47,8 @@ describe("configuration", () => {
     [{ OWNER_PUBKEY: OWNER.slice(1) }, "bad-owner"],
     [{ OWNER_PUBKEY: `npub1${OWNER.slice(5)}` }, "bad-owner"],
     [{ OWNER_PUBKEY: 1 }, "bad-owner"],
-  ])("refuses %j", (vars, error) => {
-    expect(parseVaultConfig(vars)).toEqual({ ok: false, error });
+  ])("refuses %j", (vars, code) => {
+    expect(parseVaultConfig(vars)).toEqual({ ok: false, code });
   });
 
   it("accepts a lowercase hex key", () => {
@@ -126,9 +126,9 @@ describe("write authorization (WR-1, WR-3)", () => {
   it("WR-1: refuses a retired key and a revoked key at once", async () => {
     await withVault((store) => {
       expect(rejectionOf(store, ev({ kind: 1, content: "before" }, KEY_MASTODON))).toBeUndefined();
-      expect(store.retireKey(MASTODON)).toEqual({ changed: true });
+      expect(store.retireKey(MASTODON)).toEqual({ ok: true });
       expect(rejectionOf(store, ev({ kind: 1, content: "retired" }, KEY_MASTODON))).toBe("retired-key");
-      expect(store.revokeKey(MASTODON, NOW)).toEqual({ changed: true });
+      expect(store.revokeKey(MASTODON, NOW)).toEqual({ ok: true });
       expect(rejectionOf(store, ev({ kind: 1, content: "revoked" }, KEY_MASTODON))).toBe("unknown-key");
       expect(store.canonicalEvents()).toHaveLength(1);
     });
@@ -138,7 +138,7 @@ describe("write authorization (WR-1, WR-3)", () => {
     await withVault((store) => {
       const note = ev({ kind: 1 }, KEY_STRANGER);
       expect(rejectionOf(store, note)).toBe("unknown-key");
-      expect(store.addKey(STRANGER, { role: "importer", kinds: [1] }, NOW)).toEqual({ changed: true });
+      expect(store.addKey(STRANGER, { role: "importer", kinds: [1] }, NOW)).toEqual({ ok: true });
       expect(store.apply(note, NOW)).toEqual({ ok: true, outcome: "stored" });
     });
   });
@@ -147,7 +147,7 @@ describe("write authorization (WR-1, WR-3)", () => {
     await withVault((store, storage) => {
       expect(rejectionOf(store, ev({ kind: 0 }, KEY_STRANGER))).toBe("unknown-key");
       const opened = EventStore.open(storage, testConfig(STRANGER), NOW);
-      if (!opened.ok) throw new Error(opened.error);
+      if (!opened.ok) throw new Error(opened.code);
       const reopened = opened.store;
       expect(reopened.apply(ev({ kind: 0 }, KEY_STRANGER), NOW)).toEqual({ ok: true, outcome: "stored" });
       expect(rejectionOf(reopened, ev({ kind: 0 }, KEY_OWNER))).toBe("retired-key");
@@ -167,11 +167,11 @@ describe("write authorization (WR-1, WR-3)", () => {
     ["retired", "owner-retired", (store: EventStore) => store.retireKey(MASTODON)],
   ] as const)(
     "ST-8: does not open with a %s key configured as the owner, and changes nothing",
-    async (_name, error, act) => {
+    async (_name, code, act) => {
       await withVault((store, storage) => {
-        expect(act(store)).toEqual({ changed: true });
+        expect(act(store)).toEqual({ ok: true });
         const before = store.listKeys();
-        expect(EventStore.open(storage, testConfig(MASTODON), NOW)).toEqual({ ok: false, error });
+        expect(EventStore.open(storage, testConfig(MASTODON), NOW)).toEqual({ ok: false, code });
         expect(store.listKeys()).toEqual(before);
         expect(rejectionOf(store, ev({ kind: 1 }, KEY_MASTODON))).not.toBeUndefined();
       });
@@ -181,7 +181,7 @@ describe("write authorization (WR-1, WR-3)", () => {
   it("ST-8: does not open with the previous owner configured again, since it was retired", async () => {
     await withVault((_store, storage) => {
       expect(EventStore.open(storage, testConfig(STRANGER), NOW)).toMatchObject({ ok: true });
-      expect(EventStore.open(storage, testConfig(OWNER), NOW)).toEqual({ ok: false, error: "owner-retired" });
+      expect(EventStore.open(storage, testConfig(OWNER), NOW)).toEqual({ ok: false, code: "owner-retired" });
     });
   });
 
@@ -208,11 +208,11 @@ describe("allowlist operations", () => {
     ["a fractional kind", () => [STRANGER, [1.5]] as const, "bad-kinds"],
     ["the owner", () => [OWNER, [1]] as const, "owner-key"],
     ["a listed importer", () => [BLOG, [1]] as const, "already-listed"],
-  ])("refuses to add %s", async (_name, args, reason) => {
+  ])("refuses to add %s", async (_name, args, code) => {
     await withVault((store) => {
       const [pubkey, kinds] = args();
       const before = store.listKeys();
-      expect(store.addKey(pubkey, { role: "importer", kinds }, NOW)).toEqual({ changed: false, reason });
+      expect(store.addKey(pubkey, { role: "importer", kinds }, NOW)).toEqual({ ok: false, code });
       expect(store.listKeys()).toEqual(before);
     });
   });
@@ -221,18 +221,18 @@ describe("allowlist operations", () => {
     await withVault((store) => {
       store.retireKey(BLOG);
       expect(store.addKey(BLOG, { role: "importer", kinds: [30023] }, NOW)).toEqual({
-        changed: false,
-        reason: "already-listed",
+        ok: false,
+        code: "already-listed",
       });
     });
   });
 
   it("DATA-4, ST-8: never lists a revoked key again", async () => {
     await withVault((store) => {
-      expect(store.revokeKey(BLOG, NOW)).toEqual({ changed: true });
+      expect(store.revokeKey(BLOG, NOW)).toEqual({ ok: true });
       expect(store.addKey(BLOG, { role: "importer", kinds: [30023] }, NOW)).toEqual({
-        changed: false,
-        reason: "revoked-key",
+        ok: false,
+        code: "revoked-key",
       });
       expect(store.listKeys().revoked).toEqual([{ pubkey: BLOG, revokedAt: NOW }]);
     });
@@ -240,15 +240,15 @@ describe("allowlist operations", () => {
 
   it("refuses to retire or revoke the owner, and reports operations that change nothing", async () => {
     await withVault((store) => {
-      expect(store.retireKey(OWNER)).toEqual({ changed: false, reason: "owner-key" });
-      expect(store.revokeKey(OWNER, NOW)).toEqual({ changed: false, reason: "owner-key" });
-      expect(store.retireKey(STRANGER)).toEqual({ changed: false, reason: "not-listed" });
-      expect(store.revokeKey(STRANGER, NOW)).toEqual({ changed: false, reason: "not-listed" });
-      expect(store.retireKey(BLOG)).toEqual({ changed: true });
-      expect(store.retireKey(BLOG)).toEqual({ changed: false, reason: "unchanged" });
-      expect(store.revokeKey(BLOG, NOW)).toEqual({ changed: true });
-      expect(store.revokeKey(BLOG, NOW)).toEqual({ changed: false, reason: "unchanged" });
-      expect(store.retireKey(BLOG)).toEqual({ changed: false, reason: "not-listed" });
+      expect(store.retireKey(OWNER)).toEqual({ ok: false, code: "owner-key" });
+      expect(store.revokeKey(OWNER, NOW)).toEqual({ ok: false, code: "owner-key" });
+      expect(store.retireKey(STRANGER)).toEqual({ ok: false, code: "not-listed" });
+      expect(store.revokeKey(STRANGER, NOW)).toEqual({ ok: false, code: "not-listed" });
+      expect(store.retireKey(BLOG)).toEqual({ ok: true });
+      expect(store.retireKey(BLOG)).toEqual({ ok: false, code: "unchanged" });
+      expect(store.revokeKey(BLOG, NOW)).toEqual({ ok: true });
+      expect(store.revokeKey(BLOG, NOW)).toEqual({ ok: false, code: "unchanged" });
+      expect(store.retireKey(BLOG)).toEqual({ ok: false, code: "not-listed" });
     });
   });
 
@@ -299,14 +299,14 @@ describe("retired and revoked keys' events (ST-5, DATA-4)", () => {
       const old = ev({ kind: 30023, created_at: 200, tags: [["d", "post"]], content: "old key" }, KEY_BLOG);
       store.apply(old, NOW);
       expect(store.addKey(publicKeyOf(KEY_NEW), { role: "importer", kinds: [30023, 5] }, NOW)).toEqual({
-        changed: true,
+        ok: true,
       });
       // Imported again under the new key, with an older created_at: the address includes the pubkey, so neither
       // version replaces the other.
       const imported = ev({ kind: 30023, created_at: 100, tags: [["d", "post"]], content: "new key" }, KEY_NEW);
       expect(store.apply(imported, NOW)).toEqual({ ok: true, outcome: "stored" });
       expect(store.query([filterOf({ kinds: [30023] })], NOW)).toHaveLength(2);
-      expect(store.retireKey(BLOG)).toEqual({ changed: true });
+      expect(store.retireKey(BLOG)).toEqual({ ok: true });
       expect(store.query([filterOf({ kinds: [30023] })], NOW)).toEqual([canonicalEventJson(imported)]);
       expect(store.query([filterOf({ ids: [old.id] })], NOW)).toEqual([canonicalEventJson(old)]);
     });

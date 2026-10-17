@@ -168,7 +168,7 @@ describe("OPS-1: the admin route is the owner's alone", () => {
     const signed = adminRequest(LIST, { event: { created_at: signedAt } });
     const request = new Request(signed.url, { method: "POST", headers: signed.headers, body: late });
     const config = parseRelayConfig(env);
-    if (!config.ok) throw new Error(config.error);
+    if (!config.ok) throw new Error(config.code);
     expect(await authorizeAdminRequest(request, config.config, () => clock)).toEqual({
       ok: false,
       refusal: { status: 401, reason: "stale" },
@@ -246,7 +246,7 @@ describe("OPS-1, DATA-4: allowlist operations", () => {
     // The state is the store's, not only the answer.
     await withStore(OWNER, (store) => {
       expect(store.roleOf(B)).toBeUndefined();
-      expect(store.addKey(B, { role: "importer", kinds: [1] }, 0)).toEqual({ changed: false, reason: "revoked-key" });
+      expect(store.addKey(B, { role: "importer", kinds: [1] }, 0)).toEqual({ ok: false, code: "revoked-key" });
     });
   });
 });
@@ -304,23 +304,23 @@ describe("DATA-5: backups", () => {
 
   it("refuses a backup whose objects do not match its manifest, or that has none", async () => {
     const written = await writeBackup(env.BACKUPS, { events: [JSON.stringify(ev({}))], allowlist: "{}" }, Date.now());
-    if (!written.ok) throw new Error(written.error);
+    if (!written.ok) throw new Error(written.code);
     const keys = backupKeys(written.id);
     expect((await readBackup(env.BACKUPS, written.id)).ok).toBe(true);
     // Locally the bucket has no lock, so an object can be replaced; a restore must notice.
     await env.BACKUPS.put(keys.events, `${JSON.stringify(ev({ content: "other" }))}\n`);
-    expect(await readBackup(env.BACKUPS, written.id)).toEqual({ ok: false, error: "integrity-mismatch" });
+    expect(await readBackup(env.BACKUPS, written.id)).toEqual({ ok: false, code: "integrity-mismatch" });
     await env.BACKUPS.delete(keys.manifest);
-    expect(await readBackup(env.BACKUPS, written.id)).toEqual({ ok: false, error: "not-found" });
+    expect(await readBackup(env.BACKUPS, written.id)).toEqual({ ok: false, code: "not-found" });
     for (const id of ["../x", "", `${written.id}/../x`, 1]) {
-      expect(await readBackup(env.BACKUPS, id)).toEqual({ ok: false, error: "bad-backup-id" });
+      expect(await readBackup(env.BACKUPS, id)).toEqual({ ok: false, code: "bad-backup-id" });
     }
   });
 
   it("logs a failed cron run as a reason code only, and fails the run", async () => {
     const logs: unknown[][] = [];
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => logs.push(args));
-    const backup = vi.spyOn(Vault.prototype, "backup").mockResolvedValueOnce({ ok: false, error: "write-failed" });
+    const backup = vi.spyOn(Vault.prototype, "backup").mockResolvedValueOnce({ ok: false, code: "write-failed" });
     await expect(worker.scheduled(createScheduledController(), env)).rejects.toThrow("the backup failed");
     backup.mockRejectedValueOnce(new TypeError(CONTENT));
     await expect(worker.scheduled(createScheduledController(), env)).rejects.toThrow("the backup failed");
@@ -335,7 +335,7 @@ describe("DATA-5: backups", () => {
     const put = vi.spyOn(env.BACKUPS, "put").mockRejectedValue(new Error(CONTENT));
     expect(await writeBackup(env.BACKUPS, { events: [], allowlist: "{}" }, Date.now())).toEqual({
       ok: false,
-      error: "write-failed",
+      code: "write-failed",
     });
     expect(put).toHaveBeenCalled();
     const puts = put.mock.calls.map(([key]) => key);
@@ -360,8 +360,8 @@ async function productionBackup() {
       [D, [1]],
     ]);
     for (const event of events) expect(store.apply(event, 1_700_000_000).ok).toBe(true);
-    expect(store.retireKey(B)).toEqual({ changed: true });
-    expect(store.revokeKey(C, 5)).toEqual({ changed: true });
+    expect(store.retireKey(B)).toEqual({ ok: true });
+    expect(store.revokeKey(C, 5)).toEqual({ ok: true });
     return {
       keys: store.listKeys(),
       all: store.query([filterOf({})], 1_700_000_000),
@@ -369,7 +369,7 @@ async function productionBackup() {
     };
   });
   const written = await source.backup(Date.now());
-  if (!written.ok) throw new Error(written.error);
+  if (!written.ok) throw new Error(written.code);
   return { id: written.id, expected };
 }
 
@@ -389,11 +389,11 @@ describe("ST-6, ST-8: restore through the admin route", () => {
       // ST-8: neither the retired nor the revoked key writes after the restore.
       expect(store.apply(ev({ kind: 1, created_at: 300 }, KEY_B), 1_700_000_000)).toEqual({
         ok: false,
-        rejection: "retired-key",
+        code: "retired-key",
       });
       expect(store.apply(ev({ kind: 1, created_at: 300 }, KEY_C), 1_700_000_000)).toEqual({
         ok: false,
-        rejection: "unknown-key",
+        code: "unknown-key",
       });
     });
     // ST-6: a restore never merges into a vault that has events.

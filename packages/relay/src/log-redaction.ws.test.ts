@@ -64,7 +64,7 @@ describe("DATA-1: log redaction", () => {
     const stored = signVerified({ kind: 1, created_at: 100, content: CONTENT, tags: [["t", FILTER]] }, KEY_OWNER);
     await runInDurableObject(vault(), (_instance, state) => {
       const opened = EventStore.open(state.storage, testConfig(publicKeyOf(KEY_OWNER)), 0);
-      if (!opened.ok) throw new Error(opened.error);
+      if (!opened.ok) throw new Error(opened.code);
       opened.store.apply(stored, 200);
     });
     const logs = captureLogs();

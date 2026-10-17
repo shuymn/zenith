@@ -15,7 +15,7 @@ export default {
   async fetch(request, env): Promise<Response> {
     const parsed = parseRelayConfig(env);
     if (!parsed.ok) {
-      logEvent("zenith.config.invalid", { reason: parsed.error });
+      logEvent("zenith.config.invalid", { reason: parsed.code });
       return new Response("Unavailable", { status: 503 });
     }
     const { config } = parsed;
@@ -46,7 +46,7 @@ export default {
   async scheduled(controller, env): Promise<void> {
     const parsed = parseRelayConfig(env);
     if (!parsed.ok) {
-      logEvent("zenith.config.invalid", { reason: parsed.error });
+      logEvent("zenith.config.invalid", { reason: parsed.code });
       throw new Error("the configuration is invalid");
     }
     let result: BackupRunResult | undefined;
@@ -55,7 +55,7 @@ export default {
     } catch (error) {
       logEvent("zenith.backup.failed", { error: errorName(error) });
     }
-    if (result?.ok === false) logEvent("zenith.backup.failed", { reason: result.error });
+    if (result?.ok === false) logEvent("zenith.backup.failed", { reason: result.code });
     // The error carries no cause: the log line above is the whole record of the failure (DATA-1).
     if (result?.ok !== true) throw new Error("the backup failed");
   },

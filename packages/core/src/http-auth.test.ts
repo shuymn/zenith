@@ -32,7 +32,7 @@ function base64(bytes: Uint8Array): string {
   return out;
 }
 
-function header(template: Partial<UnsignedEvent> = {}, key = KEY): string {
+function header(template: Partial<UnsignedEvent> = {}, key = KEY, prefix = ""): string {
   const event = signVerified(
     {
       kind: 27235,
@@ -46,7 +46,7 @@ function header(template: Partial<UnsignedEvent> = {}, key = KEY): string {
     },
     key,
   );
-  return `Nostr ${base64(utf8ToBytes(JSON.stringify(event)))}`;
+  return `Nostr ${base64(utf8ToBytes(prefix + JSON.stringify(event)))}`;
 }
 
 function verify(authorization: string | null, options: Partial<HttpAuthOptions> = {}): HttpAuthVerification {
@@ -122,9 +122,16 @@ describe("verifyHttpAuth (NIP-98, OPS-1)", () => {
     ["a length that is not base64", "Nostr eyJpZ", "bad-encoding"],
     ["padding inside the value", "Nostr ey==eyJp", "bad-encoding"],
     ["bytes that are not UTF-8", `Nostr ${base64(new Uint8Array([0xff, 0xfe]))}`, "bad-encoding"],
+    // atob skips ASCII whitespace; the exact form is checked before it runs. Two characters keep the length valid.
+    ["a line break inside base64", `Nostr ${header().slice(6, 10)}\r\n${header().slice(10)}`, "bad-encoding"],
+    ["tabs inside base64", `Nostr ${header().slice(6, 10)}\t\t${header().slice(10)}`, "bad-encoding"],
     ["JSON that is not an event", `Nostr ${base64(utf8ToBytes("[]"))}`, "bad-event"],
   ] as const)("OPS-1: refuses %s", (_name, authorization, code) => {
     expect(codeOf(verify(authorization))).toBe(code);
+  });
+
+  it("drops a leading byte order mark of the decoded event, as TextDecoder does by default", () => {
+    expect(verify(header({}, KEY, "\uFEFF"))).toEqual({ ok: true, pubkey: publicKeyOf(KEY) });
   });
 
   it("accepts the scheme in any case and the value without padding", () => {
