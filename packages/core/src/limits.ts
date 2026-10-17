@@ -16,3 +16,19 @@ export const DEFAULT_EVENT_LIMITS: EventLimits = Object.freeze({
   maxTagValueBytes: 1024,
   maxFutureSeconds: 900,
 });
+
+/** Limits applied to the filters of a REQ. */
+export type FilterLimits = {
+  /** Maximum number of filters in one REQ. */
+  readonly maxFilters: number;
+  /** Upper bound applied to `limit`; also the limit used when a filter has none. */
+  readonly maxLimit: number;
+  /** Maximum number of values in one filter, summed over ids, authors, kinds and every tag list. */
+  readonly maxFilterValues: number;
+};
+
+export const DEFAULT_FILTER_LIMITS: FilterLimits = Object.freeze({
+  maxFilters: 10,
+  maxLimit: 500,
+  maxFilterValues: 1000,
+});
