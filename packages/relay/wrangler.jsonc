@@ -1,10 +1,27 @@
+// The relay's public configuration: bindings, the cron and migrations only. Deployment values (the route, the
+// backup bucket's name, OWNER_PUBKEY and RELAY_URL) live in the gitignored wrangler.deploy.jsonc, merged in by
+// scripts/deploy.mjs; see docs/operations.md.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "zenith-relay",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-12",
+  // The relay is reached only on its route: no workers.dev URL and no preview URLs.
+  "workers_dev": false,
+  "preview_urls": false,
   "durable_objects": {
     "bindings": [{ "name": "VAULT", "class_name": "Vault" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
+  // DATA-5: the backup bucket. Its name is a deployment value.
+  "r2_buckets": [{ "binding": "BACKUPS" }],
+  // DATA-5: the daily backup, in UTC.
+  "triggers": { "crons": ["17 3 * * *"] },
+  // DATA-1: console output (logEvent only) is kept. Invocation logs are off: they record the request, and the admin
+  // route's Authorization header carries a signed NIP-98 event. See docs/operations.md.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "invocation_logs": false },
+  },
 }

@@ -58,6 +58,7 @@ function listed(pubkey: string, role: "importer" | "retired", kinds: number[], a
   return { pubkey, role, kinds, addedAt } as const;
 }
 
+// ST-7: the export gives the stored canonical JSON as it is, and a restore stores it again in canonical form.
 describe("export (DATA-5)", () => {
   it("DATA-5: exports every stored event as canonical JSONL sorted by id, and the allowlist as JSON", async () => {
     await withVault((storage) => {

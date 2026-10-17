@@ -3,6 +3,11 @@ import { parseRelayConfig } from "./config.ts";
 
 const OWNER = "a".repeat(64);
 
+function adminUrl(url: string): string {
+  const result = parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: url });
+  return result.ok ? result.config.adminUrl : result.error;
+}
+
 describe("parseRelayConfig", () => {
   it("takes a ws or wss relay URL and its path", () => {
     const result = parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: "wss://relay.example/vault" });
@@ -12,6 +17,14 @@ describe("parseRelayConfig", () => {
     });
     const local = parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: "ws://localhost:8787" });
     expect(local.ok && local.config.path).toBe("/");
+  });
+
+  it("OPS-1: puts the admin route under the relay URL, on http or https", () => {
+    expect(adminUrl("wss://relay.example/")).toBe("https://relay.example/admin");
+    expect(adminUrl("wss://Relay.Example:443")).toBe("https://relay.example/admin");
+    expect(adminUrl("wss://relay.example/vault")).toBe("https://relay.example/vault/admin");
+    expect(adminUrl("wss://relay.example/vault/?x=1#y")).toBe("https://relay.example/vault/admin");
+    expect(adminUrl("ws://localhost:8787")).toBe("http://localhost:8787/admin");
   });
 
   it.each([

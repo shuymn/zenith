@@ -1,0 +1,16 @@
+// Copy to wrangler.deploy.jsonc (gitignored) and replace every value. scripts/deploy.mjs checks it and merges it into
+// wrangler.jsonc; it may set only these keys. See docs/operations.md.
+{
+  // Optional: the account to deploy to, when the logged-in user has more than one.
+  "account_id": "<ACCOUNT_ID>",
+  // The relay's custom domain; RELAY_URL names the same host.
+  "routes": [{ "pattern": "relay.example.com", "custom_domain": true }],
+  // The backup bucket created with a 30-day bucket lock (docs/operations.md).
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "example-backup-bucket" }],
+  "vars": {
+    // The owner's public key as 64 lowercase hex characters. Never a secret key (DATA-2).
+    "OWNER_PUBKEY": "0000000000000000000000000000000000000000000000000000000000000000",
+    // The URL clients connect to. The admin route is https://<host>/<path>/admin.
+    "RELAY_URL": "wss://relay.example.com/",
+  },
+}

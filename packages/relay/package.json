@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "@zenith/core": "workspace:*"

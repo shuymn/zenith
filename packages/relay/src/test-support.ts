@@ -211,3 +211,56 @@ export async function subscriptionIds(): Promise<string[]> {
     (state) => state?.subscriptions.map((subscription) => subscription.id) ?? [],
   );
 }
+
+/** The admin URL the tests configure: RELAY_URL with https and `admin` under its path. */
+export const TEST_ADMIN_URL = "https://relay.example/admin";
+
+export type AdminRequestOptions = {
+  /** The signer; the owner by default. */
+  key?: Uint8Array;
+  /** The request URL; the admin URL by default. */
+  url?: string;
+  method?: string;
+  /** The NIP-98 event's fields; the default tags name the admin URL, the method and the body's sha256. */
+  event?: Partial<UnsignedEvent>;
+  /** The Authorization header as it is sent; null sends none. */
+  authorization?: string | null;
+};
+
+/** A signed NIP-98 Authorization header for a request with this body. */
+export function nip98Header(body: string, options: AdminRequestOptions = {}): string {
+  const method = options.method ?? "POST";
+  const event = signVerified(
+    {
+      kind: 27235,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["u", TEST_ADMIN_URL],
+        ["method", method],
+        ["payload", bytesToHex(sha256(utf8ToBytes(body)))],
+      ],
+      ...options.event,
+    },
+    options.key ?? testSecretKey("owner"),
+  );
+  let binary = "";
+  for (const byte of utf8ToBytes(JSON.stringify(event))) binary += String.fromCharCode(byte);
+  return `Nostr ${btoa(binary)}`;
+}
+
+/** A request to the admin route with `command` as its JSON body, signed by the owner unless `options` say otherwise. */
+export function adminRequest(
+  command: unknown,
+  options: AdminRequestOptions = {},
+): Request<unknown, IncomingRequestCfProperties> {
+  const body = typeof command === "string" ? command : JSON.stringify(command);
+  const method = options.method ?? "POST";
+  const authorization = options.authorization === undefined ? nip98Header(body, options) : options.authorization;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authorization !== null) headers["Authorization"] = authorization;
+  return new Request<unknown, IncomingRequestCfProperties>(options.url ?? TEST_ADMIN_URL, {
+    method,
+    headers,
+    ...(method === "GET" || method === "HEAD" ? {} : { body }),
+  });
+}

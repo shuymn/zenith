@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyKind, type KindClass } from "./kind.ts";
 
+// EV-5: storage semantics come only from NIP-01's kind ranges; every range boundary.
 describe("classifyKind", () => {
   it.each<[number, KindClass]>([
     [0, "replaceable"],

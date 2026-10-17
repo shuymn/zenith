@@ -19,7 +19,9 @@ import {
   type VerifiedEvent,
 } from "@zenith/core";
 import { DurableObject } from "cloudflare:workers";
-import { toRejectionResponse, type KeyRole } from "./allowlist.ts";
+import type { AdminResult, AuthorizedCommand } from "./admin.ts";
+import { toRejectionResponse, type AllowlistResult, type KeyRole } from "./allowlist.ts";
+import { readBackup, writeBackup, type BackupWriteResult } from "./backup-bucket.ts";
 import { parseRelayConfig, type RelayConfig } from "./config.ts";
 import {
   openedState,
@@ -89,6 +91,9 @@ const PROTECTED_REFUSALS: Record<Exclude<ReadAccess, "owner">, string> = {
 
 type Opened = { readonly config: RelayConfig; readonly store: EventStore };
 
+/** The result of a backup run: written, or why not. */
+export type BackupRunResult = BackupWriteResult | { readonly ok: false; readonly error: "unavailable" };
+
 export class Vault extends DurableObject<Env> {
   // The store and the configuration, opened on first use; #opened is the only way to reach them.
   #state: Opened | undefined;
@@ -154,6 +159,69 @@ export class Vault extends DurableObject<Env> {
     const connections = this.ctx.getWebSockets();
     for (const ws of connections) closeQuietly(ws, CLOSE_ALLOWLIST_CHANGED, "the allowlist changed");
     return connections.length;
+  }
+
+  /**
+   * DATA-5: writes a backup of the vault to the backup bucket, as of now; `at` (milliseconds) names the run. Called by
+   * the backup cron and by the admin route.
+   */
+  async backup(at: number): Promise<BackupRunResult> {
+    const opened = this.#opened();
+    if (opened === undefined) return { ok: false, error: "unavailable" };
+    return writeBackup(this.env.BACKUPS, opened.store.export(), at);
+  }
+
+  /**
+   * OPS-1: runs a command of the admin route, which the Worker authorized as the owner's. An allowlist change closes
+   * every connection (OPS-2), and so does a restore that changed the allowlist.
+   */
+  async admin(command: AuthorizedCommand): Promise<AdminResult> {
+    const opened = this.#opened();
+    if (opened === undefined) return { ok: false, op: command.op, reason: "unavailable" };
+    const { store } = opened;
+    const now = Math.floor(Date.now() / 1000);
+    switch (command.op) {
+      case "list":
+        return { ok: true, op: command.op, allowlist: store.listKeys() };
+      case "add":
+        return this.#allowlistChange(
+          command.op,
+          store.addKey(command.pubkey, { role: "importer", kinds: command.kinds }, now),
+        );
+      case "retire":
+        return this.#allowlistChange(command.op, store.retireKey(command.pubkey));
+      case "revoke":
+        return this.#allowlistChange(command.op, store.revokeKey(command.pubkey, now));
+      case "backup": {
+        const result = await this.backup(Date.now());
+        return result.ok
+          ? { ok: true, op: command.op, id: result.id, events: result.events }
+          : { ok: false, op: command.op, reason: result.error };
+      }
+      case "restore": {
+        const read = await readBackup(this.env.BACKUPS, command.backup);
+        if (!read.ok) return { ok: false, op: command.op, reason: read.error };
+        // ST-6, ST-8: the store restores only into an empty vault and merges the allowlist.
+        const result = store.restore(read.backup);
+        if (!result.ok) return { ok: false, op: command.op, reason: result.error };
+        const connectionsClosed = result.allowlistChanged ? this.closeAllConnections() : 0;
+        return {
+          ok: true,
+          op: command.op,
+          events: result.events,
+          allowlistChanged: result.allowlistChanged,
+          connectionsClosed,
+        };
+      }
+      default:
+        return command satisfies never;
+    }
+  }
+
+  /** OPS-2: an allowlist operation that changed the allowlist closes every connection. */
+  #allowlistChange(op: "add" | "retire" | "revoke", result: AllowlistResult): AdminResult {
+    if (!result.changed) return { ok: false, op, reason: result.reason };
+    return { ok: true, op, connectionsClosed: this.closeAllConnections() };
   }
 
   #receive(ws: WebSocket, state: ConnectionState, message: string | ArrayBuffer): void {

@@ -31,13 +31,21 @@ Each invariant names how its test pins it.
 - **Log redaction:** a behavior test that injects marker values (event content, an AUTH event) into the code path,
   captures every `console` method, and asserts that no marker appears.
 - **Schema:** a test that inspects the migrated SQLite schema with `PRAGMA` statements.
+- **Configuration:** a setting in a configuration file (`pnpm-workspace.yaml`, a workflow, `wrangler.jsonc`) that no
+  test exercises. An enforced part pinned by configuration alone cites no test.
+
+`packages/core/src/threat-model.test.ts` checks this document: an _Enforced (main)_ invariant says how it is pinned;
+one pinned by behavior, source analysis, log redaction or schema cites at least one test file; and every cited test
+file exists and names the invariant's ID.
 
 ## Deployment assumptions
 
 - One owner. The owner signs with a NIP-07 or NIP-46 signer; the owner's secret key is never on the server or in CI.
-- The relay Worker accepts WebSocket connections and answers everything else itself. Its configuration is the owner's
-  public key (`OWNER_PUBKEY`) and the relay URL clients connect to (`RELAY_URL`), both Worker variables. One SQLite-backed Durable Object
-  with a fixed name, the Vault DO, holds all relay state and uses the hibernation API.
+- The relay Worker accepts WebSocket connections and the owner's admin requests, and answers everything else itself.
+  Its configuration is the owner's public key (`OWNER_PUBKEY`) and the relay URL clients connect to (`RELAY_URL`), both
+  Worker variables, and the backup bucket binding (`BACKUPS`). These deployment values live in a gitignored file, not in
+  this repository ([operations.md](operations.md)). One SQLite-backed Durable Object with a fixed name, the Vault DO,
+  holds all relay state and uses the hibernation API.
 - Blossom runs as a separate Worker that stores blobs in a private R2 bucket. Its allowlist comes from the Vault DO,
   which is the single source of truth for allowed keys.
 - A backup cron copies events and blobs daily to a separate bucket with a 30-day bucket lock.
@@ -84,11 +92,11 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 | Live delivery                               | R1, R2     | NIP-42 as the owner                                          | main: `packages/relay/src/vault.ts`               |
 | WebSocket `AUTH`                            | R1, R2, R4 | per-connection challenge, relay host, time window, signature | main: `packages/relay/src/vault.ts`               |
 | NIP-11 document and other HTTP requests     | R1         | none; answered by the Worker without waking the DO           | main: `packages/relay/src/index.ts`, `nip11.ts`   |
-| Admin route: allowlist changes and restore  | R1, R2     | the owner's NIP-98 signature                                 | Planned (4)                                       |
+| Admin route: allowlist changes and restore  | R1, R2     | the owner's NIP-98 signature                                 | main: `packages/relay/src/admin.ts`, `index.ts`   |
 | Blossom upload                              | R1–R3      | BUD-11 token from the owner or an importer key               | Planned (6)                                       |
 | Blossom list and delete                     | R1–R3      | BUD-11 token from the owner                                  | Planned (6)                                       |
 | Blossom `GET` and `HEAD`                    | R1, R6     | none; the sha256 URL is the capability                       | Planned (6)                                       |
-| Backup cron                                 | internal   | —                                                            | Planned (4, 6)                                    |
+| Backup cron                                 | internal   | —                                                            | main: `packages/relay/src/index.ts`; blobs (6)    |
 | Importer cron Workers                       | internal   | their own keys; a read-only upstream token                   | Planned (importer, on hold)                       |
 | Build, CI and dependency updates            | R7         | lockfile, release age, pinned Actions                        | main: `pnpm-workspace.yaml`, `.github/workflows/` |
 
@@ -329,7 +337,13 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   the reference model; the deletion index rebuilt from deletion requests alone, so a deleted id and a version up to an
   `a` deletion are refused afterwards and a later version is stored; a forged event restoring nothing; and the fast-check property that exports a store built from
   generated writes, retirements and revocations, restores it into a new store and compares the stored events, the
-  allowlist and `REQ` results at two times). _Pinned by behavior._ Its authorization: _Planned (4)._
+  allowlist and `REQ` results at two times). _Pinned by behavior._ _Enforced (main)_ for its authorization: the admin
+  route's `restore` command (OPS-1) names a backup by its id; `Vault.admin` in `packages/relay/src/vault.ts` reads it
+  from the backup bucket with `readBackup` in `packages/relay/src/backup-bucket.ts`, which refuses an id outside
+  `backups/<id>/`, a backup without a manifest and an object whose size or sha256 differs from the manifest, then calls
+  `EventStore.restore`; `packages/relay/src/admin.test.ts` ("ST-6, ST-8": a backup written by another Vault DO's
+  backup method restored into an empty relay with the same allowlist, `REQ` results and stored events; a second restore
+  refused as `not-empty`; an unknown id, a malformed id and a changed object restoring nothing). _Pinned by behavior._
 - **ST-7: the stored event is exactly the verified event.** The stored JSON is rebuilt from the seven verified fields
   (`id`, `pubkey`, `created_at`, `kind`, `tags`, `content`, `sig`) in a canonical form, not copied from the received
   text. Unknown fields are dropped, and a field given more than once is stored with the value that was verified. `REQ`
@@ -341,8 +355,9 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   and with `content` given twice is stored with the verified values; and the reference model comparison of the stored
   JSON). _Pinned by behavior: the stored JSON, parsed again, equals the verified event._ _Enforced (main)_ for the
   export and restore in storage: `EventStore.export` gives the `events.json` column as it is, and `EventStore.restore`
-  stores it again through `canonicalEventJson`; `packages/relay/src/backup.test.ts` ("DATA-5", "ST-6"). Writing the
-  backup: _Planned (4)._
+  stores it again through `canonicalEventJson`; `packages/relay/src/backup.test.ts` ("DATA-5", "ST-6"). _Enforced (main)_ for writing the backup: `writeBackup` in
+  `packages/relay/src/backup-bucket.ts` writes the exported lines as they are; `packages/relay/src/admin.test.ts`
+  ("DATA-5", "ST-7": the events object equals the exported canonical JSON byte for byte). _Pinned by behavior._
 - **ST-8: restore never reverses a revocation or a retirement.** A key restored as retired stays retired, its events
   stay out of normal `REQ`s (ST-5), and a key revoked before the backup is not added back. No restore makes a key
   writable that the backup records as revoked or retired. Revoked keys are recorded (`revoked_keys`) and exported, so
@@ -356,7 +371,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/relay/src/backup.test.ts` ("ST-8": each merge rule, a restore that includes a retired key after which it
   stays retired and its events stay out of normal `REQ`s, a restore that does not list again a key the store revoked,
   and a backup that revoked the configured owner restoring nothing), `packages/relay/src/authorization.test.ts`
-  ("ST-8": opening with a revoked, retired or previous owner configured). _Pinned by behavior._ Backups of the allowlist: _Planned (4)._
+  ("ST-8": opening with a revoked, retired or previous owner configured). _Pinned by behavior._ _Enforced (main)_ for
+  backups of the allowlist and their restore through the admin route: `packages/relay/src/admin.test.ts` ("ST-6, ST-8":
+  a production backup with a retired, a revoked and an active importer restored into an empty relay, after which the
+  retired and the revoked key write nothing). _Pinned by behavior._
 
 ### Resources (RES)
 
@@ -397,16 +415,21 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   reading `.sql` from a storage object only in `packages/relay/src/store.ts`.
 - **RES-3: public HTTP requests never reach the DO.** The Worker answers NIP-11 and every other public HTTP request
   itself. The DO is woken only for a WebSocket upgrade on the relay's path and the messages on that connection, the
-  alarm that closes connections past their RES-4 deadline, the admin route (OPS-1), and the backup cron (DATA-5).
+  alarm that closes connections past their RES-4 deadline, an admin request whose NIP-98 signature the Worker verified
+  as the owner's (OPS-1), and the backup cron (DATA-5). The admin route and the cron may wake it because they act on
+  the vault's state, which only the DO holds; the Worker checks an admin request completely first, so an anonymous
+  request costs no DO wake-up.
   Connections use the hibernation API: `ctx.acceptWebSocket`, with the text `ping` answered `pong` by
   `setWebSocketAutoResponse` (Nostr defines no ping message; WebSocket protocol pings are answered by the runtime). The
   DO keeps no resident timer. _Enforced (main):_ the Worker in `packages/relay/src/index.ts`, and `Vault` in
   `packages/relay/src/vault.ts`; `packages/relay/src/worker.test.ts` ("RES-3": NIP-11, a plain `GET`, a `POST`,
   another path and an upgrade on another path are answered with no Durable Object created, by
-  `listDurableObjectIds`), `packages/relay/src/protocol.ws.test.ts` ("RES-3": the ping answered).
+  `listDurableObjectIds`, also an unsigned admin request and a `GET` of the admin route),
+  `packages/relay/src/admin.test.ts` ("RES-3": every refused admin request answered with no use of the Vault
+  namespace), `packages/relay/src/protocol.ws.test.ts` ("RES-3": the ping answered).
   _Pinned by behavior; and by source analysis, forbidden API:_ `packages/relay/src/source-analysis.test.ts` refuses a
   `.accept()` call and `setInterval` in every non-test file of `packages/relay/src`, with an empty allowlist. _Checked
-  in stage 4 by metrics (no DO wake-ups other than these reasons): Planned (4)._
+  in stage 4 by metrics (no DO wake-ups other than these reasons): Planned (4), checked after deployment._
 - **RES-4: a connection not authenticated as an allowlisted key is closed after 30 seconds.** An `AUTH` with a key
   that is not on the allowlist neither lifts nor extends this deadline. Only the keys that may write (the owner and
   importers) lift it; a retired key does not. The deadline is kept in the attachment and enforced by the DO's alarm,
@@ -450,9 +473,21 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `log.ts`. _Enforced (main)_ for `EVENT` and live delivery: `packages/relay/src/log-redaction.ws.test.ts` ("DATA-1":
   marker content and filters through a stored, duplicate, ephemeral, kind 22242, refused, protected, expired, forged
   and oversized `EVENT` and their delivery log nothing; a failed delivery whose error message holds markers logs the
-  error class only, closes that subscriber and still answers the sender). For the admin route: _Planned (4)._
+  error class only, closes that subscriber and still answers the sender). _Enforced (main)_ for the admin route and
+  backups: `packages/relay/src/admin.test.ts` ("DATA-1": restoring a backup whose events hold marker content, backing up
+  and a refused request log nothing, and the responses hold no event content and no part of the `Authorization`
+  header; a failed cron run logs its reason code or error class only). _Pinned by log redaction._ Cloudflare's own
+  invocation logs record the request, and Tail Workers report its URL and headers with heuristic redaction, so they
+  are turned off: `observability.logs.invocation_logs` is false in `packages/relay/wrangler.jsonc`
+  ([operations.md](operations.md#logs-data-1)). _Pinned by configuration._ That the deployed Worker's logs hold only
+  `logEvent` lines: _Planned (4), checked after deployment._
 - **DATA-2: the owner's secret key is never on the server or in CI.** No code path takes it, and no secret holds it.
-  _Planned (all stages). Pinned by review._
+  The admin route verifies the owner's signature; the owner signs with their own signer ([operations.md](operations.md)).
+  _Enforced (main)_ for the relay's configuration: `packages/relay/src/source-analysis.test.ts` ("DATA-2": `Env` in
+  `packages/relay/src/env.d.ts` declares exactly `VAULT`, `BACKUPS`, `OWNER_PUBKEY` and `RELAY_URL`; `wrangler.jsonc`
+  sets no variable and the deployment example exactly `OWNER_PUBKEY` and `RELAY_URL`; no source or configuration file
+  holds an `nsec`, a `secrets` section or a name with `SECRET`, `PRIVATE` or `NSEC`), and `mergeDeployConfig` in `packages/relay/scripts/deploy-config.ts`, which `deploy.mjs` runs, refuses any other deployment key, a variable other than the two, and a route on another host (`packages/relay/src/deploy-config.test.ts`, "DATA-2"). _Pinned by source analysis._ CI and the other
+  stages: _Planned (all stages). Pinned by review._
 - **DATA-3: importer keys and the upstream token live only in Worker secrets.** Each source has its own key, limited to
   its kinds (WR-1) and to upload (MED-2). Nothing secret is stored in GitHub. _Planned (importer, on hold)._
 - **DATA-4: a leaked key is revoked by removing it, and a key is rotated without rewriting history.** Removing a key
@@ -462,7 +497,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   caller closes every connection when it did (OPS-2). _Enforced (main)_ in storage: `addKey`, `retireKey` and
   `revokeKey` of `EventStore` in `packages/relay/src/store.ts`; `packages/relay/src/authorization.test.ts` ("DATA-4":
   a revoked key refused at once and never added again, its events kept as history, and a rotation in which the old
-  key's addressable events do not replace the new key's). _Pinned by behavior._ The admin route: _Planned (4)._
+  key's addressable events do not replace the new key's). _Pinned by behavior._ _Enforced (main)_ for the admin route:
+  the `add`, `retire` and `revoke` commands of `Vault.admin` in `packages/relay/src/vault.ts`;
+  `packages/relay/src/admin.test.ts` ("OPS-1, DATA-4": each operation and each refusal, checked in the store).
+  _Pinned by behavior._
 - **DATA-5: backups cannot be deleted or overwritten for 30 days.** The stored event JSON (ST-7) and the allowlist (keys, roles,
   allowed kinds and retired state) are exported daily, and blobs are copied daily, to a separate bucket. The bucket lock is set before the first backup, and every object key
   includes the date, so each run writes new objects. Backups keep the stored form byte for byte. _Enforced (main)_ for
@@ -470,18 +508,50 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   included, as JSONL lines of the stored canonical JSON sorted by id, and the allowlist as one JSON document, both read
   to the end in one transaction (in memory, at the vault's size) so that a write after the export never joins it
   (`formatAllowlist` and `parseAllowlist` in `packages/relay/src/backup.ts`: keys, roles, kinds, and revoked keys);
-  `packages/relay/src/backup.test.ts` ("DATA-5", including a key added and events written after the export). _Planned
-  (4)_ for writing events and the allowlist to the bucket,
-  _(6)_ for blobs. _Pinned by behavior (deletion and overwrite within retention are refused) and by restore drills._
+  `packages/relay/src/backup.test.ts` ("DATA-5", including a key added and events written after the export). _Enforced
+  (main)_ for writing events and the allowlist to the bucket: the cron's `scheduled` in `packages/relay/src/index.ts`
+  calls `Vault.backup` in `packages/relay/src/vault.ts`, and `writeBackup` in `packages/relay/src/backup-bucket.ts`
+  writes `backups/<id>/events.jsonl` and `allowlist.json`, each checked by R2 against its sha256, then
+  `manifest.json` with their keys, sizes, sha256 and the event count. `<id>` is the run's UTC time and 64 random bits,
+  so each run writes new keys and none relies on writing a key again. A failure logs a reason code only and fails the
+  run. `packages/relay/src/admin.test.ts` ("DATA-5": two cron runs at the same time write two complete backups under
+  different keys, the manifest's contents, a backup on the owner's request, a write the bucket refuses leaving no
+  manifest, and a failed run's log). _Pinned by behavior._ The bucket lock (deletion and overwrite within retention
+  refused): _Planned (4), checked after deployment_ ([operations.md](operations.md#backups-data-5)); the local runtime
+  has no bucket lock. Restore drills: _Planned (4)._ Blobs: _Planned (6)._
 
 ### Operations (OPS)
 
 - **OPS-1: the admin route is the owner's alone.** Allowlist changes and restores require a NIP-98 event signed by the
-  owner whose URL, method and time match the request. _Planned (4). Pinned by behavior._
+  owner whose URL, method and time match the request. The admin route is one URL under the relay URL
+  (`RelayConfig.adminUrl`) that takes a `POST` of one JSON command of at most 4096 bytes. NIP-98: "Servers MUST perform
+  the following checks": the kind 27235, `created_at` "within a reasonable time window (suggestion 60 seconds)", the
+  `u` tag "exactly the same as the absolute request URL (including query parameters)", and the `method` tag. The body's
+  sha256 in a `payload` tag is a SHOULD for clients and a MAY for servers in NIP-98; Zenith requires it for every
+  request with a body, so a signed header authorizes one command. The `u` tag is compared with the configured admin
+  URL, not the request's `Host`. The signature is verified by `verifyEvent` (EV-1). A failure answers 401 (NIP-98: "the
+  server SHOULD respond with a 401 Unauthorized response code"), before the DO is woken (RES-3). _Enforced (main)_ for
+  the verification: `verifyHttpAuth` in `packages/core/src/http-auth.ts`; `packages/core/src/http-auth.test.ts`
+  ("OPS-1": the scheme, base64 and UTF-8, a forged signature, each kind, `created_at` at ±60 and ±61 seconds and 10
+  minutes old, a `u` tag with another path, host, scheme, query or case, a method tag other than the request's, a
+  missing or another body's `payload`; and a header built by nostr-tools' `nip98.getToken`). _Pinned by behavior._
+  _Enforced (main)_ for the route: `authorizeAdminRequest` in `packages/relay/src/admin.ts`, the only place that creates
+  the `AuthorizedCommand` that `Vault.admin` takes, called by the Worker in `packages/relay/src/index.ts`;
+  `packages/relay/src/admin.test.ts` ("OPS-1": a request signed by another key, without a header, with another URL,
+  method, an old or future time, another kind, without a payload or with another body, with a forged signature, each
+  answered 401 without the DO; another method, an oversized body, the admin path on another URL and a malformed
+  command). _Pinned by behavior; and by source analysis, forbidden pattern:_ `packages/relay/src/source-analysis.test.ts`
+  refuses `as AuthorizedCommand` outside `admin.ts`. A signed request can be sent again within its 60 seconds; see
+  the accepted risks.
 - **OPS-2: an allowlist change closes every connection.** No subscription keeps the authority it had before the change.
   _Enforced (main)_ for the means: `closeAllConnections` of `Vault` in `packages/relay/src/vault.ts` closes every
   connection with code 1012; `packages/relay/src/protocol.ws.test.ts` ("OPS-2": an authenticated and an anonymous
-  connection closed). Calling it on every allowlist change: _Planned (4). Pinned by behavior._
+  connection closed). _Enforced (main)_ for every allowlist change: `Vault.admin` in `packages/relay/src/vault.ts`
+  calls it when an `add`, `retire` or `revoke` reports `changed` (`AllowlistResult`), and when a restore reports
+  `allowlistChanged`; `packages/relay/src/admin.ws.test.ts` ("OPS-2": the owner's subscribed connection and an
+  anonymous one closed with 1012 after each change through the admin route, and kept when nothing changed). _Pinned by
+  behavior._ _Gap: no test has an open connection during a restore, because a restore needs an empty vault and the
+  WebSocket tests share one._
 - **OPS-3: packages depend on lower layers only.** `packages/relay` and `packages/blossom` depend on `packages/core`;
   `packages/core` depends on no other package (EV-7). _Enforced (main)_ for relay:
   `packages/relay/src/source-analysis.test.ts` ("OPS-3"). _Pinned by source analysis, forbidden import: in a non-test
@@ -550,6 +620,7 @@ land, signed events published outside this repository and `relay-tester` run aga
 | NIP-62 requests to vanish are refused                                  | Honoring one would erase the signer's history up to the request, deletion requests included | the vault holds data a third party may ask to erase |
 | Backups stay inside Cloudflare                                         | The risks covered are mistaken deletion, bugs and key leaks, not platform loss              | platform loss is in scope                           |
 | An id computed with the `JSON.stringify` form is accepted (EV-2)       | Common clients compute ids this way; it is still a hash of the same fields                  | clients converge on the NIP-01 rule                 |
+| A signed admin request can be sent again within 60 seconds (OPS-1)     | TLS hides the header, invocation logs are off, and every command is harmless to repeat      | a command that is not harmless to repeat is added   |
 
 ## How to use
 
