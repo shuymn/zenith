@@ -43,6 +43,20 @@ export const DEFAULT_AUTH_LIMITS: AuthLimits = Object.freeze({
   maxClockSkewSeconds: 600,
 });
 
+/** Limits applied to NIP-98 HTTP Auth events. */
+export type HttpAuthLimits = {
+  /** How far `created_at` may be from the current time, in either direction, in seconds. */
+  readonly maxClockSkewSeconds: number;
+  /** Maximum UTF-8 byte length of the decoded event JSON. */
+  readonly maxEventBytes: number;
+};
+
+/** NIP-98: "The `created_at` timestamp MUST be within a reasonable time window (suggestion 60 seconds)." */
+export const DEFAULT_HTTP_AUTH_LIMITS: HttpAuthLimits = Object.freeze({
+  maxClockSkewSeconds: 60,
+  maxEventBytes: 16 * 1024,
+});
+
 /** Limits applied to a WebSocket connection. */
 export type ConnectionLimits = {
   /** Maximum UTF-8 byte length of one received message, checked before it is parsed. */

@@ -79,6 +79,7 @@ function sha256Hex(text: string): string {
   return bytesToHex(sha256(utf8ToBytes(text)));
 }
 
+// EV-2: the id follows NIP-01's serialization.
 describe("serializeEvent / computeEventId", () => {
   // NIP-01: "The following characters in the content field must be escaped as shown,
   // and all other characters must be included verbatim".
@@ -153,6 +154,7 @@ describe("verifyEvent", () => {
     expect(verifyRaw(JSON.stringify(event)).ok).toBe(true);
   });
 
+  // EV-2: the JSON.stringify form is also accepted, and only when a string holds such a character.
   describe("control characters outside the seven NIP-01 escapes", () => {
     // NIP-01 includes them verbatim, while JSON.stringify-based clients escape them as \u00XX.
     const template = { content: "a\u0001b\u001Fc\n", tags: [["t", "\u0000"]] };
@@ -198,6 +200,7 @@ describe("verifyEvent", () => {
     expect(verifyRaw(raw).ok).toBe(true);
   });
 
+  // EV-1: the id and signature are recomputed on every call.
   describe("tampering", () => {
     const event = sign({ content: "original" });
 
@@ -249,6 +252,7 @@ describe("verifyEvent", () => {
     });
   });
 
+  // EV-3: the structure is checked before any use; EV-2: a lone surrogate escape is rejected.
   describe("structure", () => {
     const event = sign({ content: "structure", tags: [["t", "a"]] });
 
@@ -330,6 +334,7 @@ describe("verifyEvent", () => {
     });
   });
 
+  // EV-4: created_at at most 900 seconds in the future.
   describe("created_at window", () => {
     it("accepts created_at at now + 900 seconds", () => {
       expect(verifyRaw(JSON.stringify(sign({ created_at: NOW + 900 }))).ok).toBe(true);
@@ -356,6 +361,7 @@ describe("verifyEvent", () => {
     });
   });
 
+  // RES-1: input is bounded before it is used.
   describe("size limits", () => {
     it("accepts an event of exactly 256 KiB", () => {
       expect(verifyRaw(eventOfByteLength(256 * 1024)).ok).toBe(true);

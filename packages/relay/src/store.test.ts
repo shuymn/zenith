@@ -73,6 +73,7 @@ function lowerIdFirst(a: VerifiedEvent, b: VerifiedEvent): [VerifiedEvent, Verif
   return a.id < b.id ? [a, b] : [b, a];
 }
 
+// EV-5: each kind class is stored as the reference model stores it (STORAGE in store.ts).
 describe("apply and query on SQLite, against the reference model", () => {
   it("WR-5: does not store ephemeral kinds, 22242 included", async () => {
     await withStore((store) => {

@@ -4,6 +4,7 @@
  * or an error's message. The source analysis test refuses `console` in every other file.
  */
 import type { ClientMessageType } from "@zenith/core";
+import type { BackupWriteError } from "./backup-bucket.ts";
 import type { RelayConfigError } from "./config.ts";
 
 export const LOG_EVENTS = [
@@ -12,6 +13,8 @@ export const LOG_EVENTS = [
   "zenith.message.failed",
   "zenith.delivery.failed",
   "zenith.alarm.failed",
+  "zenith.admin.failed",
+  "zenith.backup.failed",
 ] as const;
 export type LogEvent = (typeof LOG_EVENTS)[number];
 
@@ -23,7 +26,7 @@ export type ErrorName = (typeof ERROR_NAMES)[number];
 export type LogFields = {
   readonly error?: ErrorName;
   readonly message?: ClientMessageType | "binary" | "unparsed";
-  readonly reason?: RelayConfigError | "owner-revoked" | "owner-retired";
+  readonly reason?: RelayConfigError | "owner-revoked" | "owner-retired" | BackupWriteError | "unavailable";
   readonly connections?: number;
 };
 

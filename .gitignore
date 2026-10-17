@@ -13,6 +13,8 @@ dist/
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
+# Deployment values (packages/relay/wrangler.deploy.example.jsonc shows the shape)
+wrangler.deploy.jsonc
 
 # Test and coverage output
 coverage/

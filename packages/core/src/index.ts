@@ -22,6 +22,13 @@ export {
   type VerifyEventOptions,
 } from "./event.ts";
 export {
+  HTTP_AUTH_REJECTION_CODES,
+  verifyHttpAuth,
+  type HttpAuthOptions,
+  type HttpAuthRejectionCode,
+  type HttpAuthVerification,
+} from "./http-auth.ts";
+export {
   formatClosedMessage,
   matchesAnyFilter,
   matchesFilter,
@@ -43,10 +50,12 @@ export {
   DEFAULT_CONNECTION_LIMITS,
   DEFAULT_EVENT_LIMITS,
   DEFAULT_FILTER_LIMITS,
+  DEFAULT_HTTP_AUTH_LIMITS,
   type AuthLimits,
   type ConnectionLimits,
   type EventLimits,
   type FilterLimits,
+  type HttpAuthLimits,
 } from "./limits.ts";
 export {
   CLIENT_MESSAGE_TYPES,

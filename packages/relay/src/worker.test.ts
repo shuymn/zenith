@@ -71,6 +71,9 @@ describe("the Worker", () => {
       ["a POST", RELAY, { method: "POST", body: "[]" }, 404],
       ["another path", "https://relay.example/other", { headers: NOSTR_JSON }, 404],
       ["an upgrade on another path", "https://relay.example/other", { headers: { Upgrade: "websocket" } }, 404],
+      // OPS-1: the admin route wakes the DO only for a request the owner signed.
+      ["an unsigned admin request", "https://relay.example/admin", { method: "POST", body: '{"op":"list"}' }, 401],
+      ["a GET of the admin route", "https://relay.example/admin", {}, 405],
     ] as const)("answers %s itself", async (_name, url, init, status) => {
       const response = await SELF.fetch(url, init);
       await response.arrayBuffer();
