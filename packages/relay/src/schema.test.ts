@@ -2,8 +2,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { SCHEMA, type ColumnDeclaration, type IndexDeclaration, type SchemaDeclaration } from "./schema.ts";
-import { EventStore } from "./store.ts";
-import { signVerified, testSecretKey } from "./test-support.ts";
+import { openStore, publicKeyOf, signVerified, testSecretKey } from "./test-support.ts";
+
+const OWNER = publicKeyOf(testSecretKey("A"));
 
 async function withStorage<T>(callback: (storage: DurableObjectStorage) => T): Promise<T> {
   const stub = env.VAULT.get(env.VAULT.newUniqueId());
@@ -65,7 +66,7 @@ function columnTypes(storage: DurableObjectStorage, table: string): string[] {
 describe("schema", () => {
   it("ST-1: migrates to the declared schema, with events.id as the primary key", async () => {
     await withStorage((storage) => {
-      const store = new EventStore(storage);
+      const store = openStore(storage, OWNER);
       expect(store.canonicalEvents()).toEqual([]);
       expect(inspect(storage)).toEqual(SCHEMA);
       // Declared types are exactly TEXT or INTEGER, not only mapped to them.
@@ -79,24 +80,24 @@ describe("schema", () => {
 
   it("opens an already migrated database without changing it or its data", async () => {
     await withStorage((storage) => {
-      const first = new EventStore(storage);
+      const first = openStore(storage, OWNER);
       const event = signVerified({ kind: 1, created_at: 100 }, testSecretKey("A"));
-      expect(first.apply(event, 1_000)).toBe("stored");
-      const second = new EventStore(storage);
+      expect(first.apply(event, 1_000)).toEqual({ ok: true, outcome: "stored" });
+      const second = openStore(storage, OWNER);
       expect(inspect(storage)).toEqual(SCHEMA);
-      expect(rows(storage, "SELECT version FROM schema_migrations")).toEqual([{ version: 1 }]);
+      expect(rows(storage, "SELECT version FROM schema_migrations")).toEqual([{ version: 1 }, { version: 2 }]);
       expect(second.canonicalEvents()).toEqual(first.canonicalEvents());
-      expect(second.apply(event, 1_000)).toBe("duplicate");
+      expect(second.apply(event, 1_000)).toEqual({ ok: true, outcome: "duplicate" });
     });
   });
 
   it("can run a migration's statements again when its version record is missing", async () => {
     await withStorage((storage) => {
-      const store = new EventStore(storage);
+      const store = openStore(storage, OWNER);
       const event = signVerified({ kind: 1, created_at: 100 }, testSecretKey("A"));
       store.apply(event, 1_000);
       storage.sql.exec("DELETE FROM schema_migrations");
-      const reopened = new EventStore(storage);
+      const reopened = openStore(storage, OWNER);
       expect(inspect(storage)).toEqual(SCHEMA);
       expect(reopened.canonicalEvents()).toEqual(store.canonicalEvents());
     });

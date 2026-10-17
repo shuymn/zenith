@@ -1,4 +1,6 @@
 // Helpers shared by the tests. Not exported from the package.
+import { parseVaultConfig, type VaultConfig } from "./allowlist.ts";
+import { EventStore } from "./store.ts";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
@@ -41,4 +43,27 @@ export function filterOf(value: unknown): Filter {
   const result = parseFilter(value);
   if (!result.ok) throw new Error(result.error.message);
   return result.filter;
+}
+
+/** A configuration whose owner is `owner`. */
+export function testConfig(owner: string): VaultConfig {
+  const result = parseVaultConfig({ OWNER_PUBKEY: owner });
+  if (!result.ok) throw new Error(result.error);
+  return result.config;
+}
+
+/** Opens a store owned by `owner` with these importers, each with its kinds. */
+export function openStore(
+  storage: DurableObjectStorage,
+  owner: string,
+  importers: readonly (readonly [string, readonly number[]])[] = [],
+): EventStore {
+  const opened = EventStore.open(storage, testConfig(owner), 0);
+  if (!opened.ok) throw new Error(`could not open the store: ${opened.error}`);
+  const { store } = opened;
+  for (const [pubkey, kinds] of importers) {
+    const result = store.addKey(pubkey, { role: "importer", kinds }, 0);
+    if (!result.changed) throw new Error(`could not add an importer: ${result.reason}`);
+  }
+  return store;
 }
