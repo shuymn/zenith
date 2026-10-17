@@ -1,0 +1,5 @@
+# Copy to .dev.vars for `wrangler dev`. These are local development values only.
+# The owner's public key: 64 lowercase hex characters.
+OWNER_PUBKEY=0000000000000000000000000000000000000000000000000000000000000000
+# The URL clients connect to; the host of an AUTH event's relay tag must match it.
+RELAY_URL=ws://localhost:8787

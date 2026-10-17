@@ -40,11 +40,24 @@ export {
 export { classifyKind, KIND_CLASSES, type KindClass } from "./kind.ts";
 export {
   DEFAULT_AUTH_LIMITS,
+  DEFAULT_CONNECTION_LIMITS,
   DEFAULT_EVENT_LIMITS,
   DEFAULT_FILTER_LIMITS,
   type AuthLimits,
+  type ConnectionLimits,
   type EventLimits,
   type FilterLimits,
 } from "./limits.ts";
+export {
+  CLIENT_MESSAGE_TYPES,
+  formatNoticeMessage,
+  MESSAGE_REJECTION_CODES,
+  parseClientMessage,
+  type ClientMessage,
+  type ClientMessageType,
+  type MessageParseResult,
+  type MessageRejection,
+  type MessageRejectionCode,
+} from "./message.ts";
 /** Reference model of the storage semantics; see model.ts. */
 export * as referenceModel from "./model.ts";

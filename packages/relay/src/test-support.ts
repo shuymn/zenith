@@ -67,3 +67,104 @@ export function openStore(
   }
   return store;
 }
+
+/** The relay URL the tests configure (vitest.config.ts). */
+export const TEST_RELAY_URL = "wss://relay.example/";
+
+type Received = readonly unknown[];
+
+/** The client side of a WebSocket to the relay, with its messages queued in order. */
+export class TestClient {
+  readonly ws: WebSocket;
+  /** Resolves with the close code and reason when the relay closes the connection. */
+  readonly closed: Promise<{ code: number; reason: string }>;
+  readonly #queue: string[] = [];
+  readonly #waiting: ((message: string) => void)[] = [];
+
+  constructor(ws: WebSocket) {
+    this.ws = ws;
+    ws.addEventListener("message", (event) => {
+      const data = typeof event.data === "string" ? event.data : "<binary>";
+      const waiter = this.#waiting.shift();
+      if (waiter === undefined) this.#queue.push(data);
+      else waiter(data);
+    });
+    this.closed = new Promise((resolve) => {
+      ws.addEventListener("close", (event) => resolve({ code: event.code, reason: event.reason }));
+    });
+    ws.accept();
+  }
+
+  /** The next message as text. */
+  nextText(timeoutMs = 2000): Promise<string> {
+    const queued = this.#queue.shift();
+    if (queued !== undefined) return Promise.resolve(queued);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no message from the relay")), timeoutMs);
+      this.#waiting.push((message) => {
+        clearTimeout(timer);
+        resolve(message);
+      });
+    });
+  }
+
+  /** The next message, parsed. */
+  async next(timeoutMs?: number): Promise<Received> {
+    const value: unknown = JSON.parse(await this.nextText(timeoutMs));
+    if (!Array.isArray(value)) throw new Error("the relay sent a message that is not an array");
+    return value;
+  }
+
+  /** Every message received before the relay answers a malformed message, which it answers with a NOTICE. */
+  async drain(): Promise<Received[]> {
+    this.ws.send("[");
+    const received: Received[] = [];
+    for (;;) {
+      const message = await this.next();
+      if (message[0] === "NOTICE" && message[1] === "invalid: message is not valid JSON") return received;
+      received.push(message);
+    }
+  }
+
+  send(value: unknown): void {
+    this.ws.send(JSON.stringify(value));
+  }
+
+  close(): void {
+    this.ws.close(1000, "done");
+  }
+}
+
+/** Opens a WebSocket through the Worker and returns it with the challenge the relay sent first. */
+export async function connect(
+  fetcher: Fetcher,
+  url = TEST_RELAY_URL.replace("wss:", "https:"),
+): Promise<{ client: TestClient; challenge: string }> {
+  const response = await fetcher.fetch(url, { headers: { Upgrade: "websocket" } });
+  if (response.webSocket === null) throw new Error(`no WebSocket: ${response.status}`);
+  const client = new TestClient(response.webSocket);
+  const [type, challenge] = await client.next();
+  if (type !== "AUTH" || typeof challenge !== "string") throw new Error("the relay did not send a challenge first");
+  return { client, challenge };
+}
+
+/** A signed NIP-42 AUTH event as JSON text. */
+export function authEvent(
+  secretKey: Uint8Array,
+  challenge: string,
+  overrides: Partial<UnsignedEvent> = {},
+  relay = TEST_RELAY_URL,
+): VerifiedEvent {
+  return signVerified(
+    {
+      kind: 22242,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["relay", relay],
+        ["challenge", challenge],
+      ],
+      ...overrides,
+    },
+    secretKey,
+  );
+}

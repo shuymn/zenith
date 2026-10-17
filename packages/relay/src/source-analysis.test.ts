@@ -31,6 +31,45 @@ const SQL_CAPABILITY_ALLOWED: Record<string, string> = {
 };
 const SQL_CAPABILITY = /\.\s*sql\b/;
 
+/**
+ * Forbidden APIs, each allowed only in the files listed with the reason. Everything not listed is a violation.
+ * RES-3: connections use the hibernation API (`ctx.acceptWebSocket`, never a WebSocket's `.accept()`), and the DO keeps
+ * no resident timer. DATA-1: only log.ts writes to the console, with fields from closed sets. EV-1: a received event is
+ * verified from its text with verifyEvent; verifyEventObject, which skips the size limit, is for restores only.
+ */
+const FORBIDDEN_APIS: readonly { label: string; pattern: RegExp; allowed: Record<string, string> }[] = [
+  { label: "calls .accept()", pattern: /\.\s*accept\s*\(/, allowed: {} },
+  { label: "uses setInterval", pattern: /\bsetInterval\b/, allowed: {} },
+  {
+    label: "uses console",
+    pattern: /\bconsole\b/,
+    allowed: { "./log.ts": "logEvent, whose fields are typed by closed sets" },
+  },
+  {
+    label: "uses verifyEventObject",
+    pattern: /\bverifyEventObject\b/,
+    allowed: { "./store.ts": "EventStore.restore, which checks backup events without the received limits (ST-6)" },
+  },
+];
+
+// `import ... from "..."`, `export ... from "..."`, `import "..."` and `import("...")`.
+const IMPORT =
+  /(?:^|\n)\s*(?:import|export)\s[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+
+/** OPS-3: relay depends on core and the platform only, never on another package of this repository. */
+function isAllowedImport(specifier: string): boolean {
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier === "@zenith/core" ||
+    specifier === "cloudflare:workers"
+  );
+}
+
+const packageJson = import.meta.glob<string>("../package.json", { query: "?raw", import: "default", eager: true })[
+  "../package.json"
+];
+
 function stripComments(source: string): string {
   return source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/(^|[^:\\])\/\/.*$/gm, "$1");
 }
@@ -69,20 +108,38 @@ function violations(files: Record<string, string>): string[] {
     if (SQL_CAPABILITY.test(source) && SQL_CAPABILITY_ALLOWED[file] === undefined) {
       found.push(`${file}: reads .sql`);
     }
+    for (const { label, pattern, allowed } of FORBIDDEN_APIS) {
+      if (pattern.test(source) && allowed[file] === undefined) found.push(`${file}: ${label}`);
+    }
+    for (const match of source.matchAll(IMPORT)) {
+      const specifier = match[1] ?? match[2] ?? match[3] ?? "";
+      if (!isAllowedImport(specifier)) found.push(`${file}: imports ${specifier}`);
+    }
   }
   return found;
 }
 
 describe("source analysis of packages/relay", () => {
   it("sees the source tree without test files", () => {
-    expect(Object.keys(sources)).toEqual(expect.arrayContaining(["./store.ts", "./sql.ts", "./index.ts"]));
+    expect(Object.keys(sources)).toEqual(
+      expect.arrayContaining(["./store.ts", "./sql.ts", "./index.ts", "./vault.ts", "./log.ts"]),
+    );
     expect(Object.keys(sources).filter((file) => file.endsWith(".test.ts") || file === "./test-support.ts")).toEqual(
       [],
     );
   });
 
-  it("RES-2: passes no interpolated or concatenated SQL to exec, and reads .sql only in the store", () => {
+  it("RES-2, RES-3, DATA-1, EV-1, OPS-3: has no forbidden SQL, API or import outside the allowlists", () => {
     expect(violations(sources)).toEqual([]);
+  });
+
+  it("OPS-3: declares only @zenith/core as a runtime dependency", () => {
+    const manifest: unknown = JSON.parse(packageJson ?? "null");
+    const dependencies =
+      typeof manifest === "object" && manifest !== null && "dependencies" in manifest
+        ? manifest.dependencies
+        : undefined;
+    expect(Object.keys(dependencies ?? {})).toEqual(["@zenith/core"]);
   });
 
   it("keeps the allowlists pointing at existing files and allowed arguments in use", () => {
@@ -94,6 +151,38 @@ describe("source analysis of packages/relay", () => {
       expect(used).toEqual(expect.arrayContaining(Object.keys(allowed)));
     }
     expect(Object.keys(sources)).toEqual(expect.arrayContaining(Object.keys(SQL_CAPABILITY_ALLOWED)));
+    for (const { pattern, allowed } of FORBIDDEN_APIS) {
+      for (const file of Object.keys(allowed)) expect(pattern.test(stripComments(sources[file] ?? ""))).toBe(true);
+    }
+  });
+
+  it("detects each forbidden API and import", () => {
+    expect(
+      violations({
+        "./a.ts": "server.accept();\nws . accept ( )",
+        "./b.ts": "const timer = setInterval(tick, 1000);",
+        "./c.ts": "console.log(event.content);",
+        "./d.ts": "const { log } = console;",
+        "./e.ts": "const result = verifyEventObject(JSON.parse(text));",
+        "./f.ts": 'import { verifyEvent } from "nostr-tools";',
+        "./g.ts": 'export { x } from "@zenith/blossom";\nconst m = await import("node:fs");',
+        "./h.ts": 'import "cloudflare:sockets";',
+        "./log.ts": "console.error(line);",
+        "./store.ts": "verifyEventObject(value);",
+        "./i.ts":
+          '// server.accept(); console.log(x); setInterval(f)\nthis.ctx.acceptWebSocket(server);\nimport { a } from "@zenith/core";\nimport { b } from "./b.ts";',
+      }),
+    ).toEqual([
+      "./a.ts: calls .accept()",
+      "./b.ts: uses setInterval",
+      "./c.ts: uses console",
+      "./d.ts: uses console",
+      "./e.ts: uses verifyEventObject",
+      "./f.ts: imports nostr-tools",
+      "./g.ts: imports @zenith/blossom",
+      "./g.ts: imports node:fs",
+      "./h.ts: imports cloudflare:sockets",
+    ]);
   });
 
   it("detects each violation", () => {

@@ -28,6 +28,7 @@ import {
   type AllowlistResult,
   type AllowlistState,
   type KeyGrant,
+  type KeyRole,
   type VaultConfig,
   type WriteRejection,
 } from "./allowlist.ts";
@@ -205,6 +206,11 @@ export class EventStore {
       this.#run(sql`INSERT INTO revoked_keys (pubkey, revoked_at) VALUES (${pubkey}, ${now})`);
       return { changed: true };
     });
+  }
+
+  /** The role of a key on the allowlist; undefined for a key that is not listed, a revoked one included. */
+  roleOf(pubkey: string): KeyRole | undefined {
+    return this.#keyOf(pubkey)?.role;
   }
 
   /** The allowlist, sorted by pubkey. */
