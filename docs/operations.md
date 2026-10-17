@@ -118,7 +118,7 @@ An `add`, `retire` or `revoke` that changes the allowlist closes every WebSocket
 reconnect and authenticate again. A refused command answers its reason, for example `409` with
 `{"ok":false,"op":"add","reason":"already-listed"}`.
 
-With [nak](https://github.com/fiatjaf/nak), sign with the owner's signer: `--sec` takes a NIP-46 `bunker://` URL, so
+With [nak](https://github.com/fiatjaf/nak) (pinned in `mise.toml`), sign with the owner's signer: `--sec` takes a NIP-46 `bunker://` URL, so
 the secret key stays in the signer. Keep the signer's URL out of shell history and files in this repository.
 
 ```sh
