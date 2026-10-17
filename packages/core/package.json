@@ -10,7 +10,12 @@
     "typecheck": "tsc",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@noble/curves": "catalog:",
+    "@noble/hashes": "catalog:"
+  },
   "devDependencies": {
+    "nostr-tools": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
