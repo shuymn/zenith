@@ -69,13 +69,21 @@ const FORBIDDEN_APIS: readonly { label: string; pattern: RegExp; allowed: Record
 const IMPORT =
   /(?:^|\n)\s*(?:import|export)\s[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
 
-/** OPS-3: relay depends on core and the platform only, never on another package of this repository. */
+/**
+ * OPS-3: relay depends on core, the platform and the packages listed here, each with its reason, never on another
+ * package of this repository. A subpath of a listed package (`valibot/dist`) is another entry and needs its own line.
+ */
+const RUNTIME_DEPENDENCIES: Record<string, string> = {
+  "@zenith/core": "the protocol: events, filters, NIP-42, NIP-98",
+  valibot: "the shape of admin commands, the allowlist of a backup and the backup manifest (validation.ts)",
+};
+
 function isAllowedImport(specifier: string): boolean {
   return (
     specifier.startsWith("./") ||
     specifier.startsWith("../") ||
-    specifier === "@zenith/core" ||
-    specifier === "cloudflare:workers"
+    specifier === "cloudflare:workers" ||
+    Object.hasOwn(RUNTIME_DEPENDENCIES, specifier)
   );
 }
 
@@ -179,13 +187,13 @@ describe("source analysis of packages/relay", () => {
     expect(violations(sources)).toEqual([]);
   });
 
-  it("OPS-3: declares only @zenith/core as a runtime dependency", () => {
+  it("OPS-3: declares exactly the allowed runtime dependencies", () => {
     const manifest: unknown = JSON.parse(packageJson ?? "null");
     const dependencies =
       typeof manifest === "object" && manifest !== null && "dependencies" in manifest
         ? manifest.dependencies
         : undefined;
-    expect(Object.keys(dependencies ?? {})).toEqual(["@zenith/core"]);
+    expect(Object.keys(dependencies ?? {}).toSorted()).toEqual(Object.keys(RUNTIME_DEPENDENCIES).toSorted());
   });
 
   it("DATA-2: declares no binding beyond the vault, the backup bucket and two public variables", () => {
@@ -247,12 +255,15 @@ describe("source analysis of packages/relay", () => {
         "./f.ts": 'import { verifyEvent } from "nostr-tools";',
         "./g.ts": 'export { x } from "@zenith/blossom";\nconst m = await import("node:fs");',
         "./h.ts": 'import "cloudflare:sockets";',
+        "./l.ts":
+          'import { Hono } from "hono";\nimport * as v from "valibot/dist";\nimport { z } from "zod";\nimport "constructor";\nimport "toString";\nimport "__proto__";',
+        "./m.ts": 'export { x } from "hasOwnProperty";\nconst m = await import("valueOf");',
         "./j.ts": "return { ok: true, command: parsed as AuthorizedCommand };",
         "./k.ts": "await this.env.BACKUPS.delete(key);",
         "./log.ts": "console.error(line);",
         "./store.ts": "verifyEventObject(value);",
         "./i.ts":
-          '// server.accept(); console.log(x); setInterval(f)\nthis.ctx.acceptWebSocket(server);\nimport { a } from "@zenith/core";\nimport { b } from "./b.ts";',
+          '// server.accept(); console.log(x); setInterval(f)\nthis.ctx.acceptWebSocket(server);\nimport { a } from "@zenith/core";\nimport { b } from "./b.ts";\nimport * as v from "valibot";',
       }),
     ).toEqual([
       "./a.ts: calls .accept()",
@@ -264,6 +275,15 @@ describe("source analysis of packages/relay", () => {
       "./g.ts: imports @zenith/blossom",
       "./g.ts: imports node:fs",
       "./h.ts: imports cloudflare:sockets",
+      "./l.ts: imports hono",
+      "./l.ts: imports valibot/dist",
+      "./l.ts: imports zod",
+      // Names of Object.prototype are not entries of the allowlist.
+      "./l.ts: imports constructor",
+      "./l.ts: imports toString",
+      "./l.ts: imports __proto__",
+      "./m.ts: imports hasOwnProperty",
+      "./m.ts: imports valueOf",
       "./j.ts: brands an AuthorizedCommand",
       "./k.ts: uses the backup bucket",
     ]);

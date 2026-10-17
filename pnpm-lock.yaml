@@ -21,12 +21,18 @@ catalogs:
     fast-check:
       specifier: 4.10.2
       version: 4.10.2
+    jsonc-parser:
+      specifier: 3.3.1
+      version: 3.3.1
     nostr-tools:
       specifier: 2.25.2
       version: 2.25.2
     typescript:
       specifier: 7.0.2
       version: 7.0.2
+    valibot:
+      specifier: 1.5.0
+      version: 1.5.0
     vitest:
       specifier: 5.0.3
       version: 5.0.3
@@ -84,6 +90,9 @@ importers:
       '@zenith/core':
         specifier: workspace:*
         version: link:../core
+      valibot:
+        specifier: 'catalog:'
+        version: 1.5.0(typescript@7.0.2)
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: 'catalog:'
@@ -100,6 +109,9 @@ importers:
       fast-check:
         specifier: 'catalog:'
         version: 4.10.2
+      jsonc-parser:
+        specifier: 'catalog:'
+        version: 3.3.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1350,6 +1362,9 @@ packages:
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
 
+  jsonc-parser@3.3.1:
+    resolution: {integrity: sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==}
+
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
     engines: {node: '>=6'}
@@ -1657,6 +1672,14 @@ packages:
 
   unenv@2.0.0-rc.24:
     resolution: {integrity: sha512-i7qRCmY42zmCwnYlh9H2SvLEypEFGye5iRmEMKjcGi7zk9UquigRjFtTLz0TYqr0ZGLZhaMHl/foy1bZR+Cwlw==}
+
+  valibot@1.5.0:
+    resolution: {integrity: sha512-nil6AkP2TChWL43Z5uJ6GTxX01CUA+g8LWUM+N/rB9NBbkUMaUsi9PUNzlUPgoKASgmx9f7eGOYpJ04/fSa6FQ==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   verkit@0.5.0:
     resolution: {integrity: sha512-u4J1hr6Y+C/hit34GwL3eIcUf3wngT8TlYUjK7tk0jxydKLAq3sYvifjdTDA6U3KCKRcQCQDGf/srjxfZF3l7g==}
@@ -2653,6 +2676,8 @@ snapshots:
 
   json-schema-traverse@1.0.0: {}
 
+  jsonc-parser@3.3.1: {}
+
   kleur@4.1.5: {}
 
   lefthook-darwin-arm64@2.1.16:
@@ -2994,6 +3019,10 @@ snapshots:
   unenv@2.0.0-rc.24:
     dependencies:
       pathe: 2.0.3
+
+  valibot@1.5.0(typescript@7.0.2):
+    optionalDependencies:
+      typescript: 7.0.2
 
   verkit@0.5.0: {}
 

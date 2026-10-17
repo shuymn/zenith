@@ -4,18 +4,13 @@
  * the Vault DO is woken (RES-3), and only {@link authorizeAdminRequest} creates the {@link AuthorizedCommand} that the
  * DO's `admin` method takes. Responses carry reason codes, keys and counts: never an event or a header.
  */
-import {
-  decodeUtf8Strict,
-  isHex32,
-  isRecord,
-  parseJsonText,
-  verifyHttpAuth,
-  type HttpAuthRejectionCode,
-} from "@zenith/core";
+import { decodeUtf8Strict, parseJsonText, verifyHttpAuth, type HttpAuthRejectionCode } from "@zenith/core";
+import * as v from "valibot";
 import { ALLOWLIST_REFUSALS, type AllowlistState } from "./allowlist.ts";
 import { BACKUP_READ_ERRORS, BACKUP_WRITE_ERRORS } from "./backup-bucket.ts";
 import type { RelayConfig } from "./config.ts";
 import { RESTORE_ERRORS } from "./store.ts";
+import { hex32, validate } from "./validation.ts";
 
 /** The largest admin request body. A command is a few hundred bytes; a restore names a backup, never carries one. */
 export const MAX_ADMIN_BODY_BYTES = 4096;
@@ -141,48 +136,24 @@ export function adminResultResponse(result: AdminResult): Response {
   return json(result, result.ok ? 200 : REFUSAL_STATUS[result.reason]);
 }
 
-/** Parses one command. Every field is checked, and a field the command does not have refuses it. */
-export function parseAdminCommand(body: Uint8Array): AdminCommandParseResult {
-  const command = parseCommandFields(body);
-  return command === undefined ? { ok: false, code: "bad-command" } : { ok: true, command };
-}
+/**
+ * One command per operation; a field the command does not have refuses it. The store checks the kinds of a grant
+ * (WR-1, WR-3); only their type is checked here.
+ */
+const ADMIN_COMMAND = v.variant("op", [
+  v.strictObject({ op: v.picklist(["list", "backup"]) }),
+  v.strictObject({ op: v.picklist(["retire", "revoke"]), pubkey: hex32 }),
+  v.strictObject({ op: v.literal("add"), pubkey: hex32, kinds: v.array(v.number()) }),
+  v.strictObject({ op: v.literal("restore"), backup: v.string() }),
+]);
 
-function parseCommandFields(body: Uint8Array): AdminCommand | undefined {
+/** Parses one command from the body: strict UTF-8, JSON, then {@link ADMIN_COMMAND}. */
+export function parseAdminCommand(body: Uint8Array): AdminCommandParseResult {
   const text = decodeUtf8Strict(body);
-  if (text === undefined) return undefined;
-  const parsed = parseJsonText(text);
-  if (!parsed.ok) return undefined;
-  const { value } = parsed;
-  if (!isRecord(value)) return undefined;
-  const fields: Record<string, unknown> = { ...value };
-  const op = fields["op"];
-  const has = (...names: string[]) =>
-    Object.keys(fields).length === names.length + 1 && names.every((name) => name in fields);
-  const pubkey = fields["pubkey"];
-  switch (op) {
-    case "list":
-    case "backup":
-      return has() ? { op } : undefined;
-    case "retire":
-    case "revoke":
-      return has("pubkey") && isHex32(pubkey) ? { op, pubkey } : undefined;
-    case "add": {
-      const kinds = fields["kinds"];
-      if (!has("pubkey", "kinds") || !isHex32(pubkey) || !Array.isArray(kinds)) {
-        return undefined;
-      }
-      const values: unknown[] = kinds;
-      // The store checks the kinds of a grant (WR-1, WR-3); only their type is checked here.
-      if (!values.every((kind): kind is number => typeof kind === "number")) return undefined;
-      return { op, pubkey, kinds: values };
-    }
-    case "restore": {
-      const backup = fields["backup"];
-      return has("backup") && typeof backup === "string" ? { op, backup } : undefined;
-    }
-    default:
-      return undefined;
-  }
+  const parsed = text === undefined ? undefined : parseJsonText(text);
+  if (parsed?.ok !== true) return { ok: false, code: "bad-command" };
+  const command = validate(ADMIN_COMMAND, parsed.value, "bad-command");
+  return command.ok ? { ok: true, command: command.value } : command;
 }
 
 function refuse(refusal: AdminRequestRefusal): AdminAuthorization {
