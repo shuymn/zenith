@@ -8,6 +8,8 @@ pnpm = "12"
 actionlint = "1"
 betterleaks = "1"
 ghalint = "1"
+# The Nostr command-line client docs/operations.md uses to sign as the owner.
+"github:fiatjaf/nak" = "0"
 
 [settings]
 lockfile = true

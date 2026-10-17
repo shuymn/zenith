@@ -51,6 +51,21 @@ checksum = "sha256:1262cac411e27b4653e6b66b7b06580ebcc2026fdd903e12e6cb0e4591639
 url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.5.6/ghalint_1.5.6_darwin_arm64.tar.gz"
 url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/409631219"
 
+[[tools."github:fiatjaf/nak"]]
+version = "0.21.2"
+backend = "github:fiatjaf/nak"
+specifiers = ["0"]
+
+[tools."github:fiatjaf/nak"."platforms.linux-x64"]
+checksum = "sha256:0acd56fea6ab1b9a0a68c8615670c6f8eff9e8878922442e387b94ee15266bb8"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.21.2/nak-v0.21.2-linux-amd64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/622094962"
+
+[tools."github:fiatjaf/nak"."platforms.macos-arm64"]
+checksum = "sha256:405cda08f961e00f29abcd151ed230a1505a87045b3ddaed1649c5e58db109ea"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.21.2/nak-v0.21.2-darwin-arm64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/622094909"
+
 [[tools.node]]
 version = "24.22.0"
 backend = "core:node"
