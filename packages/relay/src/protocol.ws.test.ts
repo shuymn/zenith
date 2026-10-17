@@ -1,19 +1,21 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readState, type ConnectionState } from "./connection.ts";
-import { EventStore } from "./store.ts";
+import { readState } from "./connection.ts";
+import type { EventStore } from "./store.ts";
 import {
   authEvent,
   connect,
+  evict,
+  subscriptionIds,
+  vault,
+  withStore as withStoreOf,
   publicKeyOf,
   signVerified,
-  testConfig,
   testSecretKey,
   TEST_RELAY_URL,
   type TestClient,
 } from "./test-support.ts";
-import { AUTH_TIMEOUT_MS, PING, PONG, VAULT_NAME } from "./vault.ts";
+import { AUTH_TIMEOUT_MS, PING, PONG } from "./vault.ts";
 
 const KEY_OWNER = testSecretKey("owner");
 const OWNER = publicKeyOf(KEY_OWNER);
@@ -21,29 +23,8 @@ const KEY_IMPORTER = testSecretKey("protocol importer");
 const KEY_RETIRED = testSecretKey("protocol retired");
 const KEY_STRANGER = testSecretKey("protocol stranger");
 
-const vault = () => env.VAULT.getByName(VAULT_NAME);
-
-/** Runs `callback` on an EventStore opened on the Vault DO's storage, as the DO opens it. */
 function withStore<T>(callback: (store: EventStore) => T): Promise<T> {
-  return runInDurableObject(vault(), (_instance, state) => {
-    const opened = EventStore.open(state.storage, testConfig(OWNER), 0);
-    if (!opened.ok) throw new Error(opened.error);
-    return callback(opened.store);
-  });
-}
-
-/**
- * Evicts the Vault DO, keeping its hibernated WebSockets. The returned check, called once the connection has been
- * used again, confirms that another instance served it: an instance created by runInDurableObject cannot use the
- * storage for a WebSocket message, so the check runs last.
- */
-async function evict(): Promise<() => Promise<void>> {
-  const before = await runInDurableObject(vault(), (instance) => new WeakRef(instance));
-  await evictDurableObject(vault());
-  return async () => {
-    const after = await runInDurableObject(vault(), (instance) => instance);
-    expect(before.deref()).not.toBe(after);
-  };
+  return withStoreOf(OWNER, callback);
 }
 
 /** Drops the attachment of every connection, as if it had never been written. */
@@ -58,18 +39,6 @@ async function idlePastDeadline(): Promise<void> {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() + AUTH_TIMEOUT_MS + 1000);
   expect(await runDurableObjectAlarm(vault())).toBe(true);
-}
-
-/** The attachment state of every open connection; a connection without an attachment gives undefined. */
-function connectionStates(): Promise<(ConnectionState | undefined)[]> {
-  return runInDurableObject(vault(), (_instance, state) => state.getWebSockets().map((ws) => readState(ws)));
-}
-
-/** The ids of every registered subscription, over every open connection. */
-async function subscriptionIds(): Promise<string[]> {
-  return (await connectionStates()).flatMap(
-    (state) => state?.subscriptions.map((subscription) => subscription.id) ?? [],
-  );
 }
 
 let clients: TestClient[] = [];

@@ -79,9 +79,9 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 | Entry point                                 | Reached by | Authenticated by                                             | Status and code                                   |
 | ------------------------------------------- | ---------- | ------------------------------------------------------------ | ------------------------------------------------- |
 | Event verification for every received event | R1–R4      | id and signature (EV-1)                                      | main: `packages/core/src/event.ts`, `kind.ts`     |
-| WebSocket `EVENT`                           | R1–R4      | signature, allowlist and the key's kinds; NIP-42 for NIP-70  | Planned (3)                                       |
+| WebSocket `EVENT`                           | R1–R4      | signature, allowlist and the key's kinds; NIP-42 for NIP-70  | main: `packages/relay/src/vault.ts`               |
 | WebSocket `REQ` and `CLOSE`                 | R1, R2     | NIP-42 as the owner                                          | main: `packages/relay/src/vault.ts`               |
-| Live delivery                               | R1, R2     | NIP-42 as the owner                                          | Planned (3)                                       |
+| Live delivery                               | R1, R2     | NIP-42 as the owner                                          | main: `packages/relay/src/vault.ts`               |
 | WebSocket `AUTH`                            | R1, R2, R4 | per-connection challenge, relay host, time window, signature | main: `packages/relay/src/vault.ts`               |
 | NIP-11 document and other HTTP requests     | R1         | none; answered by the Worker without waking the DO           | main: `packages/relay/src/index.ts`, `nip11.ts`   |
 | Admin route: allowlist changes and restore  | R1, R2     | the owner's NIP-98 signature                                 | Planned (4)                                       |
@@ -110,7 +110,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   (main)_ for `AUTH`: `#auth` in `packages/relay/src/vault.ts`; `packages/relay/src/protocol.ws.test.ts` ("EV-1": a
   signature that does not verify, and an AUTH event over 256 KiB). _Pinned by behavior; and by source analysis,
   forbidden API:_ `packages/relay/src/source-analysis.test.ts` refuses `verifyEventObject` in every non-test file of
-  `packages/relay/src` except `store.ts` (restore, ST-6). For `EVENT`: _Planned (3)._
+  `packages/relay/src` except `store.ts` (restore, ST-6). _Enforced (main)_ for `EVENT`: `#event` in
+  `packages/relay/src/vault.ts`; `packages/relay/src/events.ws.test.ts` ("EV-1": a signature that does not verify, an
+  id that does not match, an event over 256 KiB, and a field given twice, verified with the value JSON.parse keeps).
+  _Pinned by behavior._
 - **EV-2: the id follows NIP-01's serialization.** NIP-01: "The following characters in the content field must be
   escaped as shown, and all other characters must be included verbatim". Tag strings follow the same rule. An id
   computed with the `JSON.stringify` form, which escapes the other control characters as `\u00XX`, is also accepted, and
@@ -142,11 +145,16 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/relay/src/store.test.ts` ("WR-5", "ST-1", and the reference model comparison over regular, unknown (45),
   replaceable, addressable and ephemeral kinds). _Pinned by behavior._
 - **EV-6: an event already expired on receipt is rejected.** An event whose NIP-40 `expiration` has passed answers `OK`
-  false with `invalid:`. An `expiration` equal to the current time has passed. _Enforced (main)_ in the reference model:
-  `apply` and `toOkResponse` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("EV-6"). _Pinned by
+  false with `invalid:`. An `expiration` equal to the current time has passed. An ephemeral event is the exception
+  (NIP-40: "An expiration timestamp does not affect storage of ephemeral events"): it answers `OK` true, is never
+  stored (WR-5), and is not delivered, because delivery checks the expiration when it sends (ST-3). _Enforced (main)_
+  in the reference model: `apply` and `toOkResponse` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("EV-6"). _Pinned by
   behavior._ _Enforced (main)_ in storage: `EventStore.apply` in `packages/relay/src/store.ts`;
   `packages/relay/src/store.test.ts` ("EV-6", and the property that compares every write's outcome with the reference
-  model). _Pinned by behavior._ Answering `EVENT` with it: _Planned (3)._
+  model). _Pinned by behavior._ _Enforced (main)_ for answering `EVENT`: `#event` in `packages/relay/src/vault.ts`
+  answers each write outcome by `toOkResponse`; `packages/relay/src/events.ws.test.ts` ("EV-6": `OK` false with
+  `invalid:`, nothing stored; and "ST-3, EV-6": an expired ephemeral event answered `OK` true, not stored and not
+  delivered). _Pinned by behavior._
 - **EV-7: `packages/core` is pure and depends on `@noble` only.** It imports no `cloudflare:*` module and no nostr-tools
   (nostr-tools' `verifyEvent` caches its result on the object, so it is used only in tests, as a cross-check). _Enforced
   (main):_ `packages/core/src/source-analysis.test.ts` ("EV-7, EV-2", "EV-7: declares only @noble packages"). _Pinned
@@ -171,10 +179,19 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/relay/src/store.ts` before anything is stored, and the `allowed_keys` table;
   `packages/relay/src/authorization.test.ts` ("WR-1": the owner's kinds, the blog and Mastodon importers' kinds at each side of their grant, a key not listed, a
   retired and a revoked key, a key added later, a configured owner change, and every allowlist refusal). _Pinned by
-  behavior._ Answering `EVENT` with it: _Planned (3)._
+  behavior._ _Enforced (main)_ for answering `EVENT`: `#event` in `packages/relay/src/vault.ts`, which answers a
+  refusal by `toRejectionResponse`; `packages/relay/src/events.ws.test.ts` ("WR-1": the owner's event without `AUTH`,
+  an importer within and outside its kinds, a key not listed, a retired key and kind 62, each checked in the store).
+  _Pinned by behavior._
 - **WR-2: a protected event is accepted only from its authenticated author.** An event with the `["-"]` tag is accepted
   only when the connection authenticated with NIP-42 as the event's `pubkey`. NIP-70: "The default behavior of a relay
-  MUST be to reject any event that contains `["-"]`." _Planned (3). Pinned by behavior._
+  MUST be to reject any event that contains `["-"]`." The refusal is `auth-required:` on a connection without `AUTH`
+  (NIP-70's example) and `restricted:` on one authenticated as another key. Only the keys that may write are recorded
+  as authenticated (RD-1), and only they can write (WR-1). A `-` tag with more items is treated as protected too.
+  _Enforced (main):_ `#event` and `isProtected` in `packages/relay/src/vault.ts`, checked before the store;
+  `packages/relay/src/events.ws.test.ts` ("WR-2": without `AUTH`, authenticated as an importer or a key not on the
+  allowlist, the owner's and an importer's own protected events accepted, each checked in the store). _Pinned by
+  behavior._
 - **WR-3: kind 62 is refused.** A request to vanish deletes the signer's events up to its `created_at`, deletion
   requests included (NIP-62: "Kind `62` requests a specific relay to delete everything, including NIP-09 Deletion
   Events, from the `.pubkey` until its `.created_at`"). That conflicts with keeping the signer's history, deletion
@@ -195,7 +212,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `apply` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("WR-5": kinds 20000, 22242 and 29999 not
   stored; 19999 and 30000 stored). _Pinned by behavior._ _Enforced (main)_ in storage: `EventStore.apply` in
   `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("WR-5", and the reference model comparison).
-  _Pinned by behavior._ Delivery: _Planned (3)._
+  _Pinned by behavior._ _Enforced (main)_ for delivery: `#event` in `packages/relay/src/vault.ts` delivers an
+  ephemeral event live and never a kind 22242 event; `packages/relay/src/events.ws.test.ts` ("WR-5": an ephemeral event
+  delivered and not stored; kind 22242 sent as `EVENT` neither stored nor delivered, to a `kinds` subscription or a
+  tag one). _Pinned by behavior._
 
 ### Read authorization (RD)
 
@@ -234,8 +254,14 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 - **RD-4: live delivery is authorized like a `REQ`.** Every delivery passes the RD-1 checks for the connection at
   sending time. A `REQ` sent before `AUTH` receives nothing after `AUTH`. Expired events (ST-3) are not delivered.
   _Enforced (main)_ for the registration: a refused `REQ` is never registered (RD-1), so nothing reaches it after
-  `AUTH`; `packages/relay/src/protocol.ws.test.ts` ("RD-1: answers an unauthenticated REQ"). Live delivery: _Planned
-  (3). Pinned by behavior._
+  `AUTH`; `packages/relay/src/protocol.ws.test.ts` ("RD-1: answers an unauthenticated REQ"). _Enforced (main)_ for
+  live delivery: `#deliver` in `packages/relay/src/vault.ts` reads each open connection's attachment when it sends,
+  and delivers only to a connection authenticated as the owner and within its deadline, for a subscription whose
+  filters match, and only an event that is stored as current or ephemeral; `packages/relay/src/events.ws.test.ts`
+  ("RD-4": a matching and a non-matching subscription, a duplicate, a refused write and a version stored as history,
+  a replaced subscription and `CLOSE`, a `REQ` refused before `AUTH`, attachments rewritten after the `REQ` to drop
+  the owner, keep only an importer or pass the deadline, and delivery after the DO is evicted). _Pinned by
+  behavior._
 - **RD-5: NIP-11 discloses only the minimum.** The document holds minimal relay information and the limits, sets
   `restricted_writes` to true and `auth_required` to false (writes do not need `AUTH`). It names no contact and no
   `pubkey`, so it does not disclose the owner. _Enforced (main):_ `packages/relay/src/nip11.ts`;
@@ -272,13 +298,18 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-3": not returned from the `expiration` time on,
   by `ids` either). _Enforced (main)_ for storage: `EventStore.query` in `packages/relay/src/store.ts`;
   `packages/relay/src/store.test.ts` ("ST-3", and the reference model comparison at two times). _Pinned by behavior._
-  Live delivery: _Planned (3)._
+  _Enforced (main)_ for live delivery: `#deliver` in `packages/relay/src/vault.ts` checks the reference model's
+  `isExpired` when it sends, which also covers an ephemeral event (NIP-40: "An expiration timestamp does not affect
+  storage of ephemeral events"); `packages/relay/src/events.ws.test.ts` ("ST-3, EV-6": an expired ephemeral event accepted
+  and not delivered, one that expires later delivered). _Pinned by behavior._
 - **ST-4: history is kept.** A replaced version is kept with `is_latest = 0`. A normal `REQ` returns current versions; a
   `REQ` by `ids` also returns replaced ones. If a frequently replaced kind accumulates too many versions, a per-kind
   retention count is the only thing that removes them. _Enforced (main)_ for the reference model: `query` in
   `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-4"). _Enforced (main)_ for storage:
   `EventStore` in `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("ST-4", and the reference model
-  comparison). _Pinned by behavior._ No retention count exists yet.
+  comparison). _Pinned by behavior._ A new current version reads and writes a fixed number of rows however long the
+  history is (A5): only the previous current version is marked as history; `packages/relay/src/store.test.ts` ("ST-1,
+  ST-4: reads and writes as many rows", by the cursors' `rowsRead` and `rowsWritten`). No retention count exists yet.
 - **ST-5: a retired key's events are history.** A retired key stays in the allowlist with the role `retired`. Its
   events stay stored and are not returned by a normal `REQ`. A new key's addressable events never replace the old key's,
   because the address includes the pubkey. A `REQ` by `ids` still returns them, as it returns replaced versions
@@ -337,7 +368,8 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/core/src/event.test.ts` ("size limits", at and one past each bound), _pinned by behavior_: the event size
   in `verifyEvent` only (it measures the received text; `verifyEventObject` has no text to measure), and the tag count
   and tag size in both. The WebSocket entry gives `verifyEvent` the received text of the event (EV-1): _Enforced
-  (main)_ for `AUTH`, _Planned (3)_ for `EVENT`. _Enforced (main)_ for the message size: `parseClientMessage` in
+  (main)_ for `AUTH` and `EVENT` (`packages/relay/src/protocol.ws.test.ts` and `events.ws.test.ts`, "EV-1, RES-1").
+  _Enforced (main)_ for the message size: `parseClientMessage` in
   `packages/core/src/message.ts` measures the UTF-8 bytes before `JSON.parse`; `packages/core/src/message.test.ts`
   ("RES-1": at and one past 512 KiB, UTF-8 rather than UTF-16, oversized text that is not JSON) and
   `packages/relay/src/protocol.ws.test.ts` ("RES-1": a message over 512 KiB answered with `NOTICE`). _Enforced (main)_
@@ -415,7 +447,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   and refused `AUTH`, `REQ` and their failure paths log nothing; a failure whose error message holds markers logs the
   error class only). _Pinned by log redaction; and by source analysis, forbidden API:_
   `packages/relay/src/source-analysis.test.ts` refuses `console` in every non-test file of `packages/relay/src` except
-  `log.ts`. For `EVENT`: _Planned (3)_; for the admin route: _Planned (4)._
+  `log.ts`. _Enforced (main)_ for `EVENT` and live delivery: `packages/relay/src/log-redaction.ws.test.ts` ("DATA-1":
+  marker content and filters through a stored, duplicate, ephemeral, kind 22242, refused, protected, expired, forged
+  and oversized `EVENT` and their delivery log nothing; a failed delivery whose error message holds markers logs the
+  error class only, closes that subscriber and still answers the sender). For the admin route: _Planned (4)._
 - **DATA-2: the owner's secret key is never on the server or in CI.** No code path takes it, and no secret holds it.
   _Planned (all stages). Pinned by review._
 - **DATA-3: importer keys and the upstream token live only in Worker secrets.** Each source has its own key, limited to
@@ -501,8 +536,8 @@ patterns detect a small fixture of each forbidden shape.
 
 NIP and BUD texts are quoted from their upstream repositories. Custom code is cross-checked against them: the NIP-01
 serialization rule (`packages/core/src/event.test.ts`, with nostr-tools as a second implementation), and, as stages
-land, signed events published outside this repository and `relay-tester` run against a local relay (expected failures:
-checks that assume a public relay).
+land, signed events published outside this repository and `relay-tester` run against a local relay
+(`docs/relay-tester.md`: how to run it, and the expected failures of checks that assume a public relay).
 
 ## Accepted risks
 

@@ -9,7 +9,7 @@ import {
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EventStore } from "./store.ts";
 import { filterOf, openStore, publicKeyOf, signVerified, testSecretKey } from "./test-support.ts";
 
@@ -114,6 +114,36 @@ describe("apply and query on SQLite, against the reference model", () => {
         expect(idsOf(expectSameQuery(store, model, [filterOf({ ids: [low.id, high.id] })]))).toEqual([low.id, high.id]);
       });
     }
+  });
+
+  it("ST-1, ST-4: reads and writes as many rows for a new current version whatever the length of the history", async () => {
+    await withStore((store, storage) => {
+      // The cursors of every statement the store runs, so that the rows each one read and wrote can be summed.
+      const cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
+      const exec = storage.sql.exec.bind(storage.sql);
+      vi.spyOn(storage.sql, "exec").mockImplementation((query, ...bindings) => {
+        const cursor = exec(query, ...bindings);
+        cursors.push(cursor);
+        return cursor;
+      });
+      const write = (created_at: number) => {
+        cursors.length = 0;
+        expect(store.apply(ev({ kind: 30_000, created_at, tags: [["d", "history"]] }), NOW)).toEqual({
+          ok: true,
+          outcome: "stored",
+        });
+        return {
+          read: cursors.reduce((sum, cursor) => sum + cursor.rowsRead, 0),
+          written: cursors.reduce((sum, cursor) => sum + cursor.rowsWritten, 0),
+        };
+      };
+      const versions = Array.from({ length: 60 }, (_, i) => write(100 + i));
+      expect(versions[59]).toEqual(versions[2]);
+      // The history is kept (ST-4): one current version and 59 replaced ones.
+      expect(store.query([filterOf({ kinds: [30_000] })], NOW)).toHaveLength(1);
+      expect(store.canonicalEvents()).toHaveLength(60);
+      vi.restoreAllMocks();
+    });
   });
 
   it("ST-2: rejects a deleted id submitted again, and a target that arrives after its deletion", async () => {

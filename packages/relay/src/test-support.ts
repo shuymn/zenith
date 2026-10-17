@@ -1,4 +1,9 @@
 // Helpers shared by the tests. Not exported from the package.
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { expect } from "vitest";
+import { readState, type ConnectionState } from "./connection.ts";
+import { VAULT_NAME } from "./vault.ts";
 import { parseVaultConfig, type VaultConfig } from "./allowlist.ts";
 import { EventStore } from "./store.ts";
 import { schnorr } from "@noble/curves/secp256k1.js";
@@ -166,5 +171,43 @@ export function authEvent(
       ...overrides,
     },
     secretKey,
+  );
+}
+
+/** The Vault DO the Worker forwards upgrades to. */
+export const vault = () => env.VAULT.getByName(VAULT_NAME);
+
+/** Runs `callback` on an EventStore opened on the Vault DO's storage, as the DO opens it with `owner`. */
+export function withStore<T>(owner: string, callback: (store: EventStore) => T): Promise<T> {
+  return runInDurableObject(vault(), (_instance, state) => {
+    const opened = EventStore.open(state.storage, testConfig(owner), 0);
+    if (!opened.ok) throw new Error(opened.error);
+    return callback(opened.store);
+  });
+}
+
+/**
+ * Evicts the Vault DO, keeping its hibernated WebSockets. The returned check, called once the connection has been
+ * used again, confirms that another instance served it: an instance created by runInDurableObject cannot use the
+ * storage for a WebSocket message, so the check runs last.
+ */
+export async function evict(): Promise<() => Promise<void>> {
+  const before = await runInDurableObject(vault(), (instance) => new WeakRef(instance));
+  await evictDurableObject(vault());
+  return async () => {
+    const after = await runInDurableObject(vault(), (instance) => instance);
+    expect(before.deref()).not.toBe(after);
+  };
+}
+
+/** The attachment state of every open connection; a connection without an attachment gives undefined. */
+export function connectionStates(): Promise<(ConnectionState | undefined)[]> {
+  return runInDurableObject(vault(), (_instance, state) => state.getWebSockets().map((ws) => readState(ws)));
+}
+
+/** The ids of every registered subscription, over every open connection. */
+export async function subscriptionIds(): Promise<string[]> {
+  return (await connectionStates()).flatMap(
+    (state) => state?.subscriptions.map((subscription) => subscription.id) ?? [],
   );
 }
