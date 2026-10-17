@@ -4,8 +4,15 @@
  * the Vault DO is woken (RES-3), and only {@link authorizeAdminRequest} creates the {@link AuthorizedCommand} that the
  * DO's `admin` method takes. Responses carry reason codes, keys and counts: never an event or a header.
  */
-import { verifyHttpAuth, type HttpAuthRejectionCode } from "@zenith/core";
-import { ALLOWLIST_REFUSALS, isPubkey, type AllowlistState } from "./allowlist.ts";
+import {
+  decodeUtf8Strict,
+  isHex32,
+  isRecord,
+  parseJsonText,
+  verifyHttpAuth,
+  type HttpAuthRejectionCode,
+} from "@zenith/core";
+import { ALLOWLIST_REFUSALS, type AllowlistState } from "./allowlist.ts";
 import { BACKUP_READ_ERRORS, BACKUP_WRITE_ERRORS } from "./backup-bucket.ts";
 import type { RelayConfig } from "./config.ts";
 import { RESTORE_ERRORS } from "./store.ts";
@@ -24,6 +31,12 @@ export type AdminCommand =
   | { readonly op: "backup" }
   /** `backup` is a backup id (`backups/<id>/` in the bucket); the DO reads the backup from R2 itself. */
   | { readonly op: "restore"; readonly backup: string };
+
+export const ADMIN_COMMAND_ERRORS = ["bad-command"] as const;
+export type AdminCommandError = (typeof ADMIN_COMMAND_ERRORS)[number];
+export type AdminCommandParseResult =
+  | { readonly ok: true; readonly command: AdminCommand }
+  | { readonly ok: false; readonly code: AdminCommandError };
 
 declare const authorized: unique symbol;
 /** A command from a request that the owner signed with NIP-98; created only by {@link authorizeAdminRequest}. */
@@ -78,7 +91,7 @@ const REFUSAL_STATUS: Record<AdminRefusal, number> = {
 
 export type AdminRequestRefusal =
   | { readonly status: 401; readonly reason: HttpAuthRejectionCode | "not-owner" }
-  | { readonly status: 400; readonly reason: "bad-command" }
+  | { readonly status: 400; readonly reason: AdminCommandError }
   | { readonly status: 405; readonly reason: "method-not-allowed" }
   | { readonly status: 413; readonly reason: "too-large" };
 
@@ -109,11 +122,11 @@ export async function authorizeAdminRequest(
   });
   if (!auth.ok) return refuse({ status: 401, reason: auth.code });
   if (auth.pubkey !== config.vault.owner) return refuse({ status: 401, reason: "not-owner" });
-  const command = parseAdminCommand(body);
-  if (command === undefined) return refuse({ status: 400, reason: "bad-command" });
+  const parsed = parseAdminCommand(body);
+  if (!parsed.ok) return refuse({ status: 400, reason: parsed.code });
   // The one place that brands a command: its request was signed by the owner for this URL, method and body.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-  return { ok: true, command: command as AuthorizedCommand };
+  return { ok: true, command: parsed.command as AuthorizedCommand };
 }
 
 export function adminRefusalResponse(refusal: AdminRequestRefusal): Response {
@@ -129,14 +142,18 @@ export function adminResultResponse(result: AdminResult): Response {
 }
 
 /** Parses one command. Every field is checked, and a field the command does not have refuses it. */
-export function parseAdminCommand(body: Uint8Array): AdminCommand | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
-  } catch {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+export function parseAdminCommand(body: Uint8Array): AdminCommandParseResult {
+  const command = parseCommandFields(body);
+  return command === undefined ? { ok: false, code: "bad-command" } : { ok: true, command };
+}
+
+function parseCommandFields(body: Uint8Array): AdminCommand | undefined {
+  const text = decodeUtf8Strict(body);
+  if (text === undefined) return undefined;
+  const parsed = parseJsonText(text);
+  if (!parsed.ok) return undefined;
+  const { value } = parsed;
+  if (!isRecord(value)) return undefined;
   const fields: Record<string, unknown> = { ...value };
   const op = fields["op"];
   const has = (...names: string[]) =>
@@ -148,10 +165,10 @@ export function parseAdminCommand(body: Uint8Array): AdminCommand | undefined {
       return has() ? { op } : undefined;
     case "retire":
     case "revoke":
-      return has("pubkey") && typeof pubkey === "string" && isPubkey(pubkey) ? { op, pubkey } : undefined;
+      return has("pubkey") && isHex32(pubkey) ? { op, pubkey } : undefined;
     case "add": {
       const kinds = fields["kinds"];
-      if (!has("pubkey", "kinds") || typeof pubkey !== "string" || !isPubkey(pubkey) || !Array.isArray(kinds)) {
+      if (!has("pubkey", "kinds") || !isHex32(pubkey) || !Array.isArray(kinds)) {
         return undefined;
       }
       const values: unknown[] = kinds;

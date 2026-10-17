@@ -5,7 +5,9 @@
 import {
   canonicalEventJson,
   classifyKind,
+  isHex32,
   matchesFilter,
+  parseJsonText,
   resolveLimit,
   type Filter,
   type FilterLimits,
@@ -18,7 +20,6 @@ import {
 import {
   checkWrite,
   isKeyRole,
-  isPubkey,
   isValidGrantKinds,
   mergeAllowlists,
   ownerConflict,
@@ -63,11 +64,11 @@ type ListCondition = { readonly values: readonly SqlValue[]; readonly where: (ch
 
 export type WriteResult =
   | { readonly ok: true; readonly outcome: ApplyOutcome }
-  | { readonly ok: false; readonly rejection: WriteRejection };
+  | { readonly ok: false; readonly code: WriteRejection };
 
 export type OpenResult =
   | { readonly ok: true; readonly store: EventStore }
-  | { readonly ok: false; readonly error: OwnerConflict };
+  | { readonly ok: false; readonly code: OwnerConflict };
 
 export const RESTORE_ERRORS = ["not-empty", "bad-allowlist", "bad-event", ...OWNER_CONFLICTS] as const;
 export type RestoreError = (typeof RESTORE_ERRORS)[number];
@@ -77,7 +78,7 @@ export type RestoreError = (typeof RESTORE_ERRORS)[number];
  */
 export type RestoreResult =
   | { readonly ok: true; readonly events: number; readonly allowlistChanged: boolean }
-  | { readonly ok: false; readonly error: RestoreError; readonly line?: number };
+  | { readonly ok: false; readonly code: RestoreError; readonly line?: number };
 
 /** What {@link EventStore.export} gives and {@link EventStore.restore} takes (DATA-5). */
 export type Backup = {
@@ -88,11 +89,11 @@ export type Backup = {
 };
 
 class RestoreAbort extends Error {
-  readonly error: RestoreError;
+  readonly code: RestoreError;
   readonly line: number | undefined;
-  constructor(error: RestoreError, line?: number) {
-    super(error);
-    this.error = error;
+  constructor(code: RestoreError, line?: number) {
+    super(code);
+    this.code = code;
     this.line = line;
   }
 }
@@ -122,12 +123,12 @@ export class EventStore {
   static open(storage: DurableObjectStorage, config: VaultConfig, now: number): OpenResult {
     const store = new EventStore(storage, config);
     store.#migrate();
-    const error = store.#storage.transactionSync(() => {
+    const code = store.#storage.transactionSync(() => {
       const conflict = ownerConflict(store.listKeys(), config);
       if (conflict === undefined) store.#ensureOwner(now);
       return conflict;
     });
-    return error === undefined ? { ok: true, store } : { ok: false, error };
+    return code === undefined ? { ok: true, store } : { ok: false, code };
   }
 
   /**
@@ -136,8 +137,8 @@ export class EventStore {
    */
   apply(event: VerifiedEvent, now: number): WriteResult {
     return this.#storage.transactionSync((): WriteResult => {
-      const rejection = checkWrite(event, this.#keyOf(event.pubkey));
-      if (rejection !== undefined) return { ok: false, rejection };
+      const code = checkWrite(event, this.#keyOf(event.pubkey));
+      if (code !== undefined) return { ok: false, code };
       const storage = STORAGE[classifyKind(event.kind)];
       // WR-5. NIP-40: "An expiration timestamp does not affect storage of ephemeral events."
       if (storage === "never") return { ok: true, outcome: "not-stored-ephemeral" };
@@ -172,39 +173,39 @@ export class EventStore {
 
   /** Adds an importer key with the kinds it may write (WR-1). The owner comes from the configuration only. */
   addKey(pubkey: string, grant: KeyGrant, now: number): AllowlistResult {
-    if (!isPubkey(pubkey)) return { changed: false, reason: "bad-pubkey" };
-    if (!isValidGrantKinds(grant.kinds)) return { changed: false, reason: "bad-kinds" };
-    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    if (!isHex32(pubkey)) return { ok: false, code: "bad-pubkey" };
+    if (!isValidGrantKinds(grant.kinds)) return { ok: false, code: "bad-kinds" };
+    if (pubkey === this.#config.owner) return { ok: false, code: "owner-key" };
     return this.#storage.transactionSync((): AllowlistResult => {
-      if (this.#isRevoked(pubkey)) return { changed: false, reason: "revoked-key" };
-      if (this.#keyOf(pubkey) !== undefined) return { changed: false, reason: "already-listed" };
+      if (this.#isRevoked(pubkey)) return { ok: false, code: "revoked-key" };
+      if (this.#keyOf(pubkey) !== undefined) return { ok: false, code: "already-listed" };
       const kinds = [...new Set(grant.kinds)].toSorted((a, b) => a - b);
       this.#insertKey({ pubkey, role: grant.role, kinds, addedAt: now });
-      return { changed: true };
+      return { ok: true };
     });
   }
 
   /** Marks a key retired (ST-5, DATA-4): it writes nothing, and its events become history. */
   retireKey(pubkey: string): AllowlistResult {
-    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    if (pubkey === this.#config.owner) return { ok: false, code: "owner-key" };
     return this.#storage.transactionSync((): AllowlistResult => {
       const key = this.#keyOf(pubkey);
-      if (key === undefined) return { changed: false, reason: "not-listed" };
-      if (key.role === "retired") return { changed: false, reason: "unchanged" };
+      if (key === undefined) return { ok: false, code: "not-listed" };
+      if (key.role === "retired") return { ok: false, code: "unchanged" };
       this.#run(sql`UPDATE allowed_keys SET role = 'retired' WHERE pubkey = ${pubkey}`);
-      return { changed: true };
+      return { ok: true };
     });
   }
 
   /** Removes a key from the allowlist (DATA-4) and records it as revoked, so that it is never listed again (ST-8). */
   revokeKey(pubkey: string, now: number): AllowlistResult {
-    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    if (pubkey === this.#config.owner) return { ok: false, code: "owner-key" };
     return this.#storage.transactionSync((): AllowlistResult => {
-      if (this.#isRevoked(pubkey)) return { changed: false, reason: "unchanged" };
-      if (this.#keyOf(pubkey) === undefined) return { changed: false, reason: "not-listed" };
+      if (this.#isRevoked(pubkey)) return { ok: false, code: "unchanged" };
+      if (this.#keyOf(pubkey) === undefined) return { ok: false, code: "not-listed" };
       this.#run(sql`DELETE FROM allowed_keys WHERE pubkey = ${pubkey}`);
       this.#run(sql`INSERT INTO revoked_keys (pubkey, revoked_at) VALUES (${pubkey}, ${now})`);
-      return { changed: true };
+      return { ok: true };
     });
   }
 
@@ -248,8 +249,9 @@ export class EventStore {
    * {@link mergeAllowlists}, so a restore never lists a revoked key again or makes a retired one writable (ST-8).
    */
   restore(backup: Backup): RestoreResult {
-    const allowlist = parseAllowlist(backup.allowlist);
-    if (allowlist === undefined) return { ok: false, error: "bad-allowlist" };
+    const parsed = parseAllowlist(backup.allowlist);
+    if (!parsed.ok) return parsed;
+    const allowlist = parsed.state;
     try {
       return this.#storage.transactionSync((): RestoreResult => {
         if (this.#run(sql`SELECT 1 FROM events LIMIT 1`).toArray().length > 0) throw new RestoreAbort("not-empty");
@@ -267,7 +269,7 @@ export class EventStore {
         }
         const before = this.listKeys();
         const result = mergeAllowlists(before, allowlist, this.#config);
-        if (!result.ok) throw new RestoreAbort(result.error);
+        if (!result.ok) throw new RestoreAbort(result.code);
         const merged = result.state;
         const allowlistChanged = formatAllowlist(merged) !== formatAllowlist(before);
         if (allowlistChanged) this.#replaceAllowlist(merged);
@@ -276,8 +278,8 @@ export class EventStore {
     } catch (error) {
       if (error instanceof RestoreAbort) {
         return error.line === undefined
-          ? { ok: false, error: error.error }
-          : { ok: false, error: error.error, line: error.line };
+          ? { ok: false, code: error.code }
+          : { ok: false, code: error.code, line: error.line };
       }
       throw error;
     }
@@ -637,14 +639,10 @@ function toAllowedKey(row: { pubkey: string; role: string; kinds: string; added_
 
 /** ST-6: a restored event is checked for its id and signature only, not the limits a received event meets. */
 function verifyRestoredEvent(text: string): VerifiedEvent | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
+  const parsed = parseJsonText(text);
+  if (!parsed.ok) return undefined;
   const unlimited = Number.POSITIVE_INFINITY;
-  const result = verifyEventObject(value, {
+  const result = verifyEventObject(parsed.value, {
     limits: { maxTags: unlimited, maxTagValueBytes: unlimited, maxFutureSeconds: unlimited },
   });
   return result.ok ? result.event : undefined;

@@ -6,6 +6,7 @@
  * The id starts with the time of the run in UTC and ends with random hex, so every run writes new keys. The bucket
  * lock refuses overwriting and deleting within retention; no run relies on writing a key again.
  */
+import { bytesToHex, decodeUtf8Strict, isHex32, isRecord, parseJsonText } from "@zenith/core";
 import type { Backup } from "./store.ts";
 
 export const BACKUP_PREFIX = "backups/";
@@ -22,11 +23,11 @@ export type BackupReadError = (typeof BACKUP_READ_ERRORS)[number];
 
 export type BackupWriteResult =
   | { readonly ok: true; readonly id: string; readonly events: number }
-  | { readonly ok: false; readonly error: BackupWriteError };
+  | { readonly ok: false; readonly code: BackupWriteError };
 
 export type BackupReadResult =
   | { readonly ok: true; readonly backup: Backup }
-  | { readonly ok: false; readonly error: BackupReadError };
+  | { readonly ok: false; readonly code: BackupReadError };
 
 type Part = { key: string; sha256: string; bytes: number };
 export type BackupManifest = {
@@ -44,8 +45,8 @@ export function isBackupId(value: unknown): value is string {
 
 /** The id of a backup run at `at` (milliseconds since the epoch). */
 export function backupId(at: number): string {
-  const random = Array.from(crypto.getRandomValues(new Uint8Array(8)), (byte) => byte.toString(16).padStart(2, "0"));
-  return `${new Date(at).toISOString().replaceAll(":", "-")}-${random.join("")}`;
+  const random = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
+  return `${new Date(at).toISOString().replaceAll(":", "-")}-${random}`;
 }
 
 /** The keys of a backup's objects. */
@@ -74,7 +75,7 @@ export async function writeBackup(bucket: R2Bucket, backup: Backup, at: number):
     await put(bucket, keys.manifest, encode(JSON.stringify(manifest)), "application/json");
     return { ok: true, id, events: backup.events.length };
   } catch {
-    return { ok: false, error: "write-failed" };
+    return { ok: false, code: "write-failed" };
   }
 }
 
@@ -83,24 +84,25 @@ export async function writeBackup(bucket: R2Bucket, backup: Backup, at: number):
  * and sha256, and the events against its count. Never throws; anything else is refused as a whole.
  */
 export async function readBackup(bucket: R2Bucket, id: unknown): Promise<BackupReadResult> {
-  if (!isBackupId(id)) return { ok: false, error: "bad-backup-id" };
+  if (!isBackupId(id)) return { ok: false, code: "bad-backup-id" };
   const keys = backupKeys(id);
   const manifestBytes = await get(bucket, keys.manifest);
-  if (manifestBytes === undefined) return { ok: false, error: "not-found" };
-  const manifest = parseManifest(manifestBytes, id, keys);
-  if (manifest === undefined) return { ok: false, error: "bad-manifest" };
+  if (manifestBytes === undefined) return { ok: false, code: "not-found" };
+  const parsed = parseManifest(manifestBytes, id, keys);
+  if (!parsed.ok) return parsed;
+  const { manifest } = parsed;
   const events = await get(bucket, keys.events);
   const allowlist = await get(bucket, keys.allowlist);
-  if (events === undefined || allowlist === undefined) return { ok: false, error: "not-found" };
+  if (events === undefined || allowlist === undefined) return { ok: false, code: "not-found" };
   if (!(await matches(events, manifest.events)) || !(await matches(allowlist, manifest.allowlist))) {
-    return { ok: false, error: "integrity-mismatch" };
+    return { ok: false, code: "integrity-mismatch" };
   }
-  const text = decode(events);
-  const allowlistText = decode(allowlist);
-  if (text === undefined || allowlistText === undefined) return { ok: false, error: "integrity-mismatch" };
-  if (text !== "" && !text.endsWith("\n")) return { ok: false, error: "integrity-mismatch" };
+  const text = decodeUtf8Strict(events);
+  const allowlistText = decodeUtf8Strict(allowlist);
+  if (text === undefined || allowlistText === undefined) return { ok: false, code: "integrity-mismatch" };
+  if (text !== "" && !text.endsWith("\n")) return { ok: false, code: "integrity-mismatch" };
   const lines = text === "" ? [] : text.slice(0, -1).split("\n");
-  if (lines.length !== manifest.events.count) return { ok: false, error: "integrity-mismatch" };
+  if (lines.length !== manifest.events.count) return { ok: false, code: "integrity-mismatch" };
   return { ok: true, backup: { events: lines, allowlist: allowlistText } };
 }
 
@@ -124,13 +126,23 @@ async function matches(bytes: Uint8Array, part: Part): Promise<boolean> {
   return bytes.byteLength === part.bytes && (await sha256Hex(bytes)) === part.sha256;
 }
 
-function parseManifest(bytes: Uint8Array, id: string, keys: ReturnType<typeof backupKeys>): BackupManifest | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(decode(bytes) ?? "");
-  } catch {
-    return undefined;
-  }
+type ManifestParseResult =
+  | { readonly ok: true; readonly manifest: BackupManifest }
+  | { readonly ok: false; readonly code: "bad-manifest" };
+
+function parseManifest(bytes: Uint8Array, id: string, keys: ReturnType<typeof backupKeys>): ManifestParseResult {
+  const manifest = parseManifestFields(bytes, id, keys);
+  return manifest === undefined ? { ok: false, code: "bad-manifest" } : { ok: true, manifest };
+}
+
+function parseManifestFields(
+  bytes: Uint8Array,
+  id: string,
+  keys: ReturnType<typeof backupKeys>,
+): BackupManifest | undefined {
+  const parsed = parseJsonText(decodeUtf8Strict(bytes) ?? "");
+  if (!parsed.ok) return undefined;
+  const { value } = parsed;
   if (!isRecord(value) || value["version"] !== MANIFEST_VERSION || value["id"] !== id) return undefined;
   const { created_at: createdAt, events, allowlist } = value;
   if (typeof createdAt !== "string") return undefined;
@@ -152,28 +164,15 @@ function parseManifest(bytes: Uint8Array, id: string, keys: ReturnType<typeof ba
 function parsePart(value: unknown, key: string): Part | undefined {
   if (!isRecord(value) || value["key"] !== key) return undefined;
   const { sha256, bytes } = value;
-  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) return undefined;
+  if (!isHex32(sha256)) return undefined;
   if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
   return { key, sha256, bytes };
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
 function encode(text: string): Uint8Array {
   return new TextEncoder().encode(text);
-}
-
-function decode(bytes: Uint8Array): string | undefined {
-  try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return undefined;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

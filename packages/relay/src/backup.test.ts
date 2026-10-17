@@ -50,7 +50,7 @@ function observe(store: EventStore, filterSets: readonly Filter[][]) {
 /** The merged allowlist; fails the test when the merge refuses. */
 function merged(current: AllowlistState, backup: AllowlistState, config = CONFIG): AllowlistState {
   const result = mergeAllowlists(current, backup, config);
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) throw new Error(result.code);
   return result.state;
 }
 
@@ -79,7 +79,7 @@ describe("export (DATA-5)", () => {
         ].toSorted((a, b) => (a.pubkey < b.pubkey ? -1 : 1)),
         revoked: [],
       });
-      expect(parseAllowlist(backup.allowlist)).toEqual(store.listKeys());
+      expect(parseAllowlist(backup.allowlist)).toEqual({ ok: true, state: store.listKeys() });
     });
   });
 
@@ -89,12 +89,13 @@ describe("export (DATA-5)", () => {
       store.apply(ev({ kind: 1, content: "before" }), NOW);
       const backup = store.export();
       const copy = materialize(backup);
-      expect(store.addKey(B, { role: "importer", kinds: [1] }, NOW)).toEqual({ changed: true });
+      expect(store.addKey(B, { role: "importer", kinds: [1] }, NOW)).toEqual({ ok: true });
       expect(store.apply(ev({ kind: 1, content: "after" }, KEY_B), NOW)).toMatchObject({ ok: true, outcome: "stored" });
       expect(store.apply(ev({ kind: 1, content: "after" }), NOW)).toMatchObject({ ok: true, outcome: "stored" });
       expect(materialize(backup)).toEqual(copy);
       expect(backup.events).toHaveLength(1);
-      expect(parseAllowlist(backup.allowlist)?.keys.map((key) => key.pubkey)).toEqual([OWNER]);
+      const parsed = parseAllowlist(backup.allowlist);
+      expect(parsed.ok && parsed.state.keys.map((key) => key.pubkey)).toEqual([OWNER]);
     });
   });
 
@@ -144,7 +145,7 @@ describe("export (DATA-5)", () => {
       }),
     ],
   ])("refuses an allowlist with %s", (_name, text) => {
-    expect(parseAllowlist(text)).toBeUndefined();
+    expect(parseAllowlist(text)).toEqual({ ok: false, code: "bad-allowlist" });
   });
 });
 
@@ -237,7 +238,7 @@ describe("restore (ST-6)", () => {
         [1, ["not json"]],
         [2, [canonicalEventJson(good), JSON.stringify({ ...good, sig: "0".repeat(128) })]],
       ] as const) {
-        expect(store.restore({ events, allowlist })).toEqual({ ok: false, error: "bad-event", line });
+        expect(store.restore({ events, allowlist })).toEqual({ ok: false, code: "bad-event", line });
         expect(store.canonicalEvents()).toEqual([]);
         expect(store.listKeys().keys.map((k) => k.pubkey)).toEqual([OWNER]);
       }
@@ -247,10 +248,10 @@ describe("restore (ST-6)", () => {
   it("ST-6: refuses a bad allowlist and a store that already holds events", async () => {
     await withVault((storage) => {
       const store = openStore(storage, OWNER);
-      expect(store.restore({ events: [], allowlist: "[]" })).toEqual({ ok: false, error: "bad-allowlist" });
+      expect(store.restore({ events: [], allowlist: "[]" })).toEqual({ ok: false, code: "bad-allowlist" });
       store.apply(ev({ kind: 1 }), NOW);
       const backup = materialize(store.export());
-      expect(store.restore(backup)).toEqual({ ok: false, error: "not-empty" });
+      expect(store.restore(backup)).toEqual({ ok: false, code: "not-empty" });
     });
   });
 });
@@ -315,8 +316,8 @@ describe("restoring the allowlist (ST-8)", () => {
       { keys: [{ pubkey: OWNER, role: "retired", kinds: [], addedAt: 0 }], revoked: [] },
       "owner-retired",
     ],
-  ] as const)("ST-8: refuses to merge when %s the configured owner", (_name, backup, error) => {
-    expect(mergeAllowlists({ keys: [owner], revoked: [] }, backup, CONFIG)).toEqual({ ok: false, error });
+  ] as const)("ST-8: refuses to merge when %s the configured owner", (_name, backup, code) => {
+    expect(mergeAllowlists({ keys: [owner], revoked: [] }, backup, CONFIG)).toEqual({ ok: false, code });
   });
 
   it("ST-8: restores nothing from a backup that revoked the configured owner", async () => {
@@ -329,7 +330,7 @@ describe("restoring the allowlist (ST-8)", () => {
     await withVault((storage) => {
       const target = openStore(storage, OWNER);
       const before = target.listKeys();
-      expect(target.restore(backup)).toEqual({ ok: false, error: "owner-revoked" });
+      expect(target.restore(backup)).toEqual({ ok: false, code: "owner-revoked" });
       expect(target.canonicalEvents()).toEqual([]);
       expect(target.listKeys()).toEqual(before);
     });
@@ -353,7 +354,7 @@ describe("restoring the allowlist (ST-8)", () => {
       expect(target.listKeys().keys).toContainEqual(listed(B, "retired", [1]));
       expect(target.apply(ev({ kind: 1, content: "after" }, KEY_B), NOW)).toEqual({
         ok: false,
-        rejection: "retired-key",
+        code: "retired-key",
       });
       expect(target.query([filterOf({})], NOW)).toEqual([]);
       expect(target.query([filterOf({ ids: [note.id] })], NOW)).toEqual([canonicalEventJson(note)]);
@@ -366,7 +367,7 @@ describe("restoring the allowlist (ST-8)", () => {
       const target = openStore(storage, OWNER, [[B, [1]]]);
       target.revokeKey(B, NOW);
       expect(target.restore(backup)).toEqual({ ok: true, events: 0, allowlistChanged: false });
-      expect(target.apply(ev({ kind: 1 }, KEY_B), NOW)).toEqual({ ok: false, rejection: "unknown-key" });
+      expect(target.apply(ev({ kind: 1 }, KEY_B), NOW)).toEqual({ ok: false, code: "unknown-key" });
     });
   });
 });

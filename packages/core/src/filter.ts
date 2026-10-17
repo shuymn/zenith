@@ -1,3 +1,4 @@
+import { isHex32, isRecord } from "./encoding.ts";
 import type { NostrEvent } from "./event.ts";
 import { DEFAULT_FILTER_LIMITS, type FilterLimits } from "./limits.ts";
 
@@ -35,7 +36,6 @@ export type FilterParseResult = { ok: true; filter: Filter } | { ok: false; erro
 export type FiltersParseResult = { ok: true; filters: Filter[] } | { ok: false; error: FilterRejection };
 export type SubscriptionIdParseResult = { ok: true; subscriptionId: string } | { ok: false; error: FilterRejection };
 
-const HEX_32_BYTES = /^[0-9a-f]{64}$/;
 const TAG_FILTER_KEY = /^#[a-zA-Z]$/;
 const MAX_SUBSCRIPTION_ID_LENGTH = 64;
 
@@ -102,7 +102,7 @@ export function parseFilter(value: unknown, limits: Partial<FilterLimits> = {}):
       filter.kinds = new Set(kinds);
     } else if (key === "ids" || key === "authors" || key === "#e" || key === "#p") {
       // NIP-01: these lists "MUST contain exact 64-character lowercase hex values".
-      const hex = stringsOf(values, (v) => HEX_32_BYTES.test(v));
+      const hex = stringsOf(values, isHex32);
       if (hex === undefined) return reject("bad-value", `${key} must contain 64-character lowercase hex values`);
       if (key === "ids" || key === "authors") filter[key] = new Set(hex);
       else filter.tags.set(key.slice(1), new Set(hex));
@@ -185,10 +185,6 @@ function isKind(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function reject(

@@ -2,6 +2,8 @@
  * The checks and the merge of scripts/deploy.mjs, without I/O, so that src/deploy-config.test.ts can test them.
  * wrangler.deploy.jsonc may set only the deployment values; everything else comes from wrangler.jsonc (DATA-2).
  */
+import { isRecord } from "@zenith/core";
+import { isOwnerPubkey, parseRelayUrl } from "../src/vars.ts";
 
 export class DeployConfigError extends Error {}
 
@@ -34,10 +36,6 @@ export function parseJsonc(text: string): unknown {
   return JSON.parse(out.replaceAll(/,(\s*[\]}])/g, "$1"));
 }
 
-function isPlainObject(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function fail(message: string): never {
   throw new DeployConfigError(message);
 }
@@ -48,7 +46,7 @@ function fail(message: string): never {
  */
 function routeHost(route: unknown): string | undefined {
   if (typeof route === "string") return route.split("/")[0];
-  if (!isPlainObject(route) || typeof route["pattern"] !== "string") return undefined;
+  if (!isRecord(route) || typeof route["pattern"] !== "string") return undefined;
   const pattern = route["pattern"];
   if (route["custom_domain"] === true) return pattern.includes("/") ? undefined : pattern;
   return pattern.split("/")[0];
@@ -59,7 +57,7 @@ function routeHost(route: unknown): string | undefined {
  * the merged file is written. Throws {@link DeployConfigError} for anything else.
  */
 export function mergeDeployConfig(base: Json, deploy: unknown, main: string): Json {
-  if (!isPlainObject(deploy)) fail("wrangler.deploy.jsonc must be an object");
+  if (!isRecord(deploy)) fail("wrangler.deploy.jsonc must be an object");
   for (const key of Object.keys(deploy)) {
     if (!DEPLOY_KEYS.has(key)) fail(`wrangler.deploy.jsonc may not set "${key}"; it belongs in wrangler.jsonc`);
   }
@@ -68,26 +66,24 @@ export function mergeDeployConfig(base: Json, deploy: unknown, main: string): Js
     fail("account_id must be a Cloudflare account id (32 hex characters), or left out");
   }
   const vars = deploy["vars"];
-  if (!isPlainObject(vars)) fail('wrangler.deploy.jsonc needs "vars" with OWNER_PUBKEY and RELAY_URL');
+  if (!isRecord(vars)) fail('wrangler.deploy.jsonc needs "vars" with OWNER_PUBKEY and RELAY_URL');
   if (Object.keys(vars).toSorted().join() !== VARS.join()) fail(`"vars" must set exactly ${VARS.join(" and ")}`);
-  const owner = vars["OWNER_PUBKEY"];
-  if (typeof owner !== "string" || !/^[0-9a-f]{64}$/.test(owner)) {
+  // The Worker's own checks (src/vars.ts), so that a deployed value is one the Worker accepts.
+  if (!isOwnerPubkey(vars["OWNER_PUBKEY"])) {
     fail(
       "OWNER_PUBKEY must be the owner's public key as 64 lowercase hex characters (not an npub, never a secret key)",
     );
   }
-  const relayUrl = vars["RELAY_URL"];
-  if (typeof relayUrl !== "string" || !URL.canParse(relayUrl) || new URL(relayUrl).protocol !== "wss:") {
-    fail("RELAY_URL must be the wss:// URL clients connect to");
-  }
+  const relayUrl = parseRelayUrl(vars["RELAY_URL"]);
+  if (relayUrl?.protocol !== "wss:") fail("RELAY_URL must be the wss:// URL clients connect to");
   const routes = deploy["routes"];
   if (!Array.isArray(routes) || routes.length === 0) fail('"routes" must name the relay\'s route');
-  const relayHost = new URL(relayUrl).host;
+  const relayHost = relayUrl.host;
   for (const route of routes as unknown[]) {
     // The host itself, not a prefix of it: `relay.example.com.other.example` is another host.
     if (routeHost(route) !== relayHost) fail(`every route must be on the host of RELAY_URL (${relayHost}) exactly`);
   }
-  const baseBuckets = Array.isArray(base["r2_buckets"]) ? (base["r2_buckets"] as unknown[]).filter(isPlainObject) : [];
+  const baseBuckets = Array.isArray(base["r2_buckets"]) ? (base["r2_buckets"] as unknown[]).filter(isRecord) : [];
   const bindings = baseBuckets.map((bucket) => bucket["binding"]);
   const buckets = deploy["r2_buckets"];
   if (!Array.isArray(buckets) || buckets.length !== bindings.length) {
@@ -95,7 +91,7 @@ export function mergeDeployConfig(base: Json, deploy: unknown, main: string): Js
   }
   const names = new Map<unknown, string>();
   for (const bucket of buckets as unknown[]) {
-    if (!isPlainObject(bucket) || Object.keys(bucket).toSorted().join() !== "binding,bucket_name") {
+    if (!isRecord(bucket) || Object.keys(bucket).toSorted().join() !== "binding,bucket_name") {
       fail('each of "r2_buckets" has exactly "binding" and "bucket_name"');
     }
     const name = bucket["bucket_name"];

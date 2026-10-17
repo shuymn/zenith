@@ -2,14 +2,8 @@
  * The exported form of the vault (DATA-5): events as JSONL, one canonical event JSON (ST-7) per line, and the
  * allowlist as one JSON document with keys, roles, allowed kinds and the revoked keys.
  */
-import {
-  isKeyRole,
-  isPubkey,
-  isValidGrantKinds,
-  type AllowedKey,
-  type AllowlistState,
-  type RevokedKey,
-} from "./allowlist.ts";
+import { isHex32, isRecord, parseJsonText } from "@zenith/core";
+import { isKeyRole, isValidGrantKinds, type AllowedKey, type AllowlistState, type RevokedKey } from "./allowlist.ts";
 
 export const ALLOWLIST_BACKUP_VERSION = 1;
 
@@ -35,14 +29,22 @@ export function formatAllowlist(state: AllowlistState): string {
   return JSON.stringify(document);
 }
 
+export const ALLOWLIST_PARSE_ERRORS = ["bad-allowlist"] as const;
+export type AllowlistParseError = (typeof ALLOWLIST_PARSE_ERRORS)[number];
+export type AllowlistParseResult =
+  | { readonly ok: true; readonly state: AllowlistState }
+  | { readonly ok: false; readonly code: AllowlistParseError };
+
 /** Parses an exported allowlist. Never throws; anything not in the exported form is refused as a whole. */
-export function parseAllowlist(text: string): AllowlistState | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
+export function parseAllowlist(text: string): AllowlistParseResult {
+  const state = parseAllowlistState(text);
+  return state === undefined ? { ok: false, code: "bad-allowlist" } : { ok: true, state };
+}
+
+function parseAllowlistState(text: string): AllowlistState | undefined {
+  const parsed = parseJsonText(text);
+  if (!parsed.ok) return undefined;
+  const { value } = parsed;
   if (!isRecord(value) || value["version"] !== ALLOWLIST_BACKUP_VERSION) return undefined;
   const { keys, revoked } = value;
   if (!Array.isArray(keys) || !Array.isArray(revoked)) return undefined;
@@ -57,7 +59,7 @@ export function parseAllowlist(text: string): AllowlistState | undefined {
   if (parsedKeys.filter((key) => key.role === "owner").length > 1) return undefined;
   const parsedRevoked: RevokedKey[] = [];
   for (const item of revoked as unknown[]) {
-    if (!isRecord(item) || typeof item["pubkey"] !== "string" || !isPubkey(item["pubkey"])) return undefined;
+    if (!isRecord(item) || !isHex32(item["pubkey"])) return undefined;
     if (!isTimestamp(item["revoked_at"]) || seen.has(item["pubkey"])) return undefined;
     seen.add(item["pubkey"]);
     parsedRevoked.push({ pubkey: item["pubkey"], revokedAt: item["revoked_at"] });
@@ -68,7 +70,7 @@ export function parseAllowlist(text: string): AllowlistState | undefined {
 function parseKey(item: unknown): AllowedKey | undefined {
   if (!isRecord(item)) return undefined;
   const { pubkey, role, kinds, added_at: addedAt } = item;
-  if (typeof pubkey !== "string" || !isPubkey(pubkey) || !isKeyRole(role) || !isTimestamp(addedAt)) return undefined;
+  if (!isHex32(pubkey) || !isKeyRole(role) || !isTimestamp(addedAt)) return undefined;
   if (role === "owner") return kinds === undefined ? { pubkey, role, addedAt } : undefined;
   if (!Array.isArray(kinds)) return undefined;
   const values: unknown[] = kinds;
@@ -79,8 +81,4 @@ function parseKey(item: unknown): AllowedKey | undefined {
 
 function isTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

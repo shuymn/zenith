@@ -5,7 +5,7 @@ const OWNER = "a".repeat(64);
 
 function adminUrl(url: string): string {
   const result = parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: url });
-  return result.ok ? result.config.adminUrl : result.error;
+  return result.ok ? result.config.adminUrl : result.code;
 }
 
 describe("parseRelayConfig", () => {
@@ -34,15 +34,15 @@ describe("parseRelayConfig", () => {
     ["relay.example", "bad-relay-url"],
     ["https://relay.example/", "bad-relay-url"],
     ["wss://user:pass@relay.example/", "bad-relay-url"],
-  ])("refuses the relay URL %s", (url, error) => {
-    expect(parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: url })).toEqual({ ok: false, error });
+  ])("refuses the relay URL %s", (url, code) => {
+    expect(parseRelayConfig({ OWNER_PUBKEY: OWNER, RELAY_URL: url })).toEqual({ ok: false, code });
   });
 
   it("refuses a missing or malformed owner first", () => {
-    expect(parseRelayConfig({ RELAY_URL: "wss://relay.example/" })).toEqual({ ok: false, error: "missing-owner" });
+    expect(parseRelayConfig({ RELAY_URL: "wss://relay.example/" })).toEqual({ ok: false, code: "missing-owner" });
     expect(parseRelayConfig({ OWNER_PUBKEY: "A".repeat(64), RELAY_URL: "wss://relay.example/" })).toEqual({
       ok: false,
-      error: "bad-owner",
+      code: "bad-owner",
     });
   });
 });

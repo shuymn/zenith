@@ -3,6 +3,7 @@
  * restored allowlist merges with the one already present (ST-8). `EventStore` in store.ts applies them.
  */
 import type { VerifiedEvent } from "@zenith/core";
+import { isOwnerPubkey } from "./vars.ts";
 
 declare const configured: unique symbol;
 
@@ -11,13 +12,13 @@ export type VaultConfig = { readonly owner: string; readonly [configured]: true 
 
 export const CONFIG_ERRORS = ["missing-owner", "bad-owner"] as const;
 export type ConfigError = (typeof CONFIG_ERRORS)[number];
-export type ConfigParseResult = { ok: true; config: VaultConfig } | { ok: false; error: ConfigError };
+export type ConfigParseResult = { ok: true; config: VaultConfig } | { ok: false; code: ConfigError };
 
 /** Reads the configuration from the Worker's variables. `OWNER_PUBKEY` is the owner's 64-character lowercase hex key. */
 export function parseVaultConfig(vars: { readonly OWNER_PUBKEY?: unknown }): ConfigParseResult {
   const owner = vars.OWNER_PUBKEY;
-  if (owner === undefined || owner === "") return { ok: false, error: "missing-owner" };
-  if (typeof owner !== "string" || !isPubkey(owner)) return { ok: false, error: "bad-owner" };
+  if (owner === undefined || owner === "") return { ok: false, code: "missing-owner" };
+  if (!isOwnerPubkey(owner)) return { ok: false, code: "bad-owner" };
   // The one place that brands a configuration.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   return { ok: true, config: { owner } as VaultConfig };
@@ -64,12 +65,10 @@ export const ALLOWLIST_REFUSALS = [
 export type AllowlistRefusal = (typeof ALLOWLIST_REFUSALS)[number];
 
 /**
- * The result of an allowlist operation. When `changed` is true the caller closes every connection (OPS-2), so that
- * no subscription keeps the authority it had before.
+ * The result of an allowlist operation. When it is ok the allowlist changed, and the caller closes every connection
+ * (OPS-2), so that no subscription keeps the authority it had before.
  */
-export type AllowlistResult =
-  | { readonly changed: true }
-  | { readonly changed: false; readonly reason: AllowlistRefusal };
+export type AllowlistResult = { readonly ok: true } | { readonly ok: false; readonly code: AllowlistRefusal };
 
 /** NIP-62: "Kind `62` requests a specific relay to delete everything, including NIP-09 Deletion Events". */
 export const VANISH_KIND = 62;
@@ -124,10 +123,6 @@ export function isValidGrantKinds(kinds: readonly unknown[]): kinds is readonly 
   );
 }
 
-export function isPubkey(value: string): boolean {
-  return /^[0-9a-f]{64}$/.test(value);
-}
-
 export const OWNER_CONFLICTS = ["owner-revoked", "owner-retired"] as const;
 /** The configured owner is a key that an allowlist records as revoked or retired. */
 export type OwnerConflict = (typeof OWNER_CONFLICTS)[number];
@@ -142,7 +137,7 @@ export function ownerConflict(state: AllowlistState, config: VaultConfig): Owner
   return key?.role === "retired" ? "owner-retired" : undefined;
 }
 
-export type MergeResult = { ok: true; state: AllowlistState } | { ok: false; error: OwnerConflict };
+export type MergeResult = { ok: true; state: AllowlistState } | { ok: false; code: OwnerConflict };
 
 /**
  * ST-8: the allowlist after restoring `backup` into a store whose allowlist is `current`. Per key, the more
@@ -153,7 +148,7 @@ export type MergeResult = { ok: true; state: AllowlistState } | { ok: false; err
  */
 export function mergeAllowlists(current: AllowlistState, backup: AllowlistState, config: VaultConfig): MergeResult {
   const conflict = ownerConflict(current, config) ?? ownerConflict(backup, config);
-  if (conflict !== undefined) return { ok: false, error: conflict };
+  if (conflict !== undefined) return { ok: false, code: conflict };
   const revoked = new Map<string, RevokedKey>();
   for (const entry of [...current.revoked, ...backup.revoked]) {
     const seen = revoked.get(entry.pubkey);

@@ -8,6 +8,15 @@ export {
 } from "./auth.ts";
 export { canonicalEventJson } from "./canonical.ts";
 export {
+  bytesToHex,
+  decodeBase64,
+  decodeUtf8Strict,
+  isHex32,
+  isRecord,
+  parseJsonText,
+  type JsonParseResult,
+} from "./encoding.ts";
+export {
   computeEventId,
   formatOkMessage,
   serializeEvent,
