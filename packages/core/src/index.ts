@@ -1,4 +1,13 @@
 export {
+  AUTH_REJECTION_CODES,
+  verifyAuthEvent,
+  type AuthOptions,
+  type AuthRejection,
+  type AuthRejectionCode,
+  type AuthVerification,
+} from "./auth.ts";
+export { canonicalEventJson } from "./canonical.ts";
+export {
   computeEventId,
   formatOkMessage,
   serializeEvent,
@@ -9,6 +18,7 @@ export {
   type EventVerification,
   type NostrEvent,
   type UnsignedEvent,
+  type VerifiedEvent,
   type VerifyEventOptions,
 } from "./event.ts";
 export {
@@ -27,5 +37,14 @@ export {
   type FiltersParseResult,
   type SubscriptionIdParseResult,
 } from "./filter.ts";
-export { classifyKind, type KindClass } from "./kind.ts";
-export { DEFAULT_EVENT_LIMITS, DEFAULT_FILTER_LIMITS, type EventLimits, type FilterLimits } from "./limits.ts";
+export { classifyKind, KIND_CLASSES, type KindClass } from "./kind.ts";
+export {
+  DEFAULT_AUTH_LIMITS,
+  DEFAULT_EVENT_LIMITS,
+  DEFAULT_FILTER_LIMITS,
+  type AuthLimits,
+  type EventLimits,
+  type FilterLimits,
+} from "./limits.ts";
+/** Reference model of the storage semantics; see model.ts. */
+export * as referenceModel from "./model.ts";

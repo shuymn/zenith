@@ -108,11 +108,14 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   only when a string contains such a character; both are deterministic hashes of the same fields under the same
   signature. A lone surrogate has no UTF-8 encoding and is rejected. _Enforced (main):_ `serializeEvent` and
   `computeEventId` in `packages/core/src/event.ts`; `packages/core/src/event.test.ts` ("serializeEvent /
-  computeEventId", "control characters outside the seven NIP-01 escapes", "rejects a lone surrogate escape"). _Pinned
-  by behavior._ _Gap: the expected serializations are written by hand and cross-checked with nostr-tools; no vector is
-  an event signed outside this repository._ Vectors from real signed events (control characters, emoji, U+2028, lone
-  surrogates): _Planned (1)._ The id is never computed with `JSON.stringify`: _Planned (1), source analysis, forbidden
-  API: a `JSON.stringify(` call in a non-test file of `packages/core/src`._
+  computeEventId", "control characters outside the seven NIP-01 escapes", "rejects a lone surrogate escape"). _Pinned by
+  behavior._ _Gap: the expected serializations are written by hand and cross-checked with nostr-tools; no vector is an
+  event signed outside this repository._ Vectors from real signed events (control characters, emoji, U+2028, lone
+  surrogates): _Planned (1)._ The id is never computed with `JSON.stringify`: _Enforced (main):_
+  `packages/core/src/source-analysis.test.ts` ("EV-7, EV-2"). _Pinned by source analysis, forbidden API:
+  `JSON.stringify` (also `JSON["stringify"]` and an uncalled reference) outside comments in a non-test file of
+  `packages/core/src`; the allowlist holds only `packages/core/src/canonical.ts`, which writes the stored JSON of an
+  already verified event (ST-7), not an id._
 - **EV-3: the event structure is checked before any use.** `id` and `pubkey` are 64 lowercase hex characters and `sig`
   128; `kind` is an integer from 0 to 65535 (NIP-01: "`<integer between 0 and 65535>`"); `created_at` is a non-negative
   integer; tags are arrays of one or more strings (NIP-01: "Each tag is an array of one or more strings"); `content` is
@@ -127,12 +130,16 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/core/src/kind.ts`; `packages/core/src/kind.test.ts` (every range boundary). _Pinned by behavior._ Its use by
   the write path: _Planned (2)._
 - **EV-6: an event already expired on receipt is rejected.** An event whose NIP-40 `expiration` has passed answers `OK`
-  false with `invalid:`. _Planned (2). Pinned by behavior._
+  false with `invalid:`. An `expiration` equal to the current time has passed. _Enforced (main)_ in the reference model:
+  `apply` and `toOkResponse` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("EV-6"). _Pinned by
+  behavior._ The write path: _Planned (2)._
 - **EV-7: `packages/core` is pure and depends on `@noble` only.** It imports no `cloudflare:*` module and no nostr-tools
-  (nostr-tools' `verifyEvent` caches its result on the object, so it is used only in tests, as a cross-check).
-  _Planned (1), source analysis, forbidden import: a `cloudflare:*` or `nostr-tools` specifier in a non-test file of
-  `packages/core/src`._ Today `packages/core/package.json` lists nostr-tools under `devDependencies` only, but no test
-  pins it.
+  (nostr-tools' `verifyEvent` caches its result on the object, so it is used only in tests, as a cross-check). _Enforced
+  (main):_ `packages/core/src/source-analysis.test.ts` ("EV-7, EV-2", "EV-7: declares only @noble packages"). _Pinned
+  by source analysis, forbidden import: in an `import`, `export ... from` or `import()` of a non-test file of
+  `packages/core/src`, any specifier other than a relative path (`./`, `../`) or one starting with `@noble/`, so
+  `cloudflare:*` and nostr-tools are refused with every other package._ The same test checks that the `dependencies` of
+  `packages/core/package.json` are exactly `@noble/curves` and `@noble/hashes`; nostr-tools is a `devDependency` only.
 
 ### Write authorization (WR)
 
@@ -151,10 +158,13 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   behavior._
 - **WR-4: a deletion request affects only events of its own pubkey.** An importer key's kind 5 therefore never deletes
   the owner's events. NIP-09: "Relays SHOULD delete or stop publishing any referenced events that have an identical
-  `pubkey` as the deletion request." _Planned (1, 2). Pinned by behavior._
-- **WR-5: ephemeral events are never stored.** Kinds 20000 to 29999 are not stored, kind 22242 included. NIP-42:
-  "Relays MUST exclude `kind: 22242` events from being broadcasted to any client." _Planned (2, 3). Pinned by
-  behavior._
+  `pubkey` as the deletion request." _Enforced (main)_ in the reference model: `deletes` in
+  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("WR-4": `e` and `a` tags of another pubkey, in either
+  order). _Pinned by behavior._ The write path: _Planned (2)._
+- **WR-5: ephemeral events are never stored.** Kinds 20000 to 29999 are not stored, kind 22242 included. NIP-42: "Relays
+  MUST exclude `kind: 22242` events from being broadcasted to any client." _Enforced (main)_ in the reference model:
+  `apply` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("WR-5": kinds 20000, 22242 and 29999 not
+  stored; 19999 and 30000 stored). _Pinned by behavior._ The write path and delivery: _Planned (2, 3)._
 
 ### Read authorization (RD)
 
@@ -162,10 +172,14 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `auth-required:`; from a connection authenticated with another key, `CLOSED` with `restricted:`. A refused `REQ` is
   not registered. _Planned (3). Pinned by behavior._
 - **RD-2: AUTH binds to this relay, this connection and now.** The relay sends a random challenge when the connection
-  opens. An AUTH event is accepted only if it is kind 22242, its `created_at` is within ±600 seconds, its `challenge` tag
-  equals the challenge this connection was sent, the host of its `relay` tag equals the configured relay host (not the
-  request's `Host`), and its signature verifies (EV-1). _Planned (1)_ for the verification, _(3)_ for the connection.
-  _Pinned by behavior._
+  opens. An AUTH event is accepted only if it is kind 22242, its `created_at` is within ±600 seconds, its `challenge`
+  tag equals the challenge this connection was sent, the host of its `relay` tag equals the configured relay host (not
+  the request's `Host`), and its signature verifies (EV-1). _Enforced (main)_ for the verification: `verifyAuthEvent` in
+  `packages/core/src/auth.ts`, which takes only a `VerifiedEvent` (EV-1); `packages/core/src/auth.test.ts` ("RD-2":
+  kinds, `created_at` at ±600 and ±601 seconds and 11 minutes old, another or missing challenge, another host,
+  subdomain, host suffix, userinfo, port and scheme). The relay host comparison lowercases the host, ignores ws versus
+  wss, the path and a trailing slash, and drops the scheme's default port. _Pinned by behavior._ The connection
+  (challenge per connection, configured host): _Planned (3)._
 - **RD-3: authentication survives hibernation, and nothing else grants it.** The challenge, the authenticated pubkey
   and the subscriptions are kept in the WebSocket attachment and restored after hibernation. A connection without an
   attachment is unauthenticated. _Planned (3). Pinned by behavior (the DO is evicted, then the same connection sends
@@ -179,22 +193,32 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 
 ### Storage semantics (ST)
 
-- **ST-1: one rule decides the current version.** Replaceable and addressable events are keyed by pubkey, kind and `d_tag`, with `d_tag = ''` for replaceable kinds. The greater `created_at` wins, and on a tie the lower id. NIP-01:
+- **ST-1: one rule decides the current version.** Replaceable and addressable events are keyed by pubkey, kind and
+  `d_tag`, with `d_tag = ''` for replaceable kinds. The greater `created_at` wins, and on a tie the lower id. NIP-01:
   "In case of replaceable events with the same timestamp, the event with the lowest id (first in lexical order) should
-  be retained". An id is stored once. _Planned (1)_ for the reference model, _(2)_ for storage. _Pinned by behavior
-  (generated event sequences compared with the reference model); schema: `events.id` is the primary key (`PRAGMA table_info`)._
+  be retained". An id is stored once. _Enforced (main)_ for the reference model: `apply` and `query` in
+  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-1", including fast-check properties over arrival
+  order, resubmissions and created_at ties). _Planned (2)_ for storage. _Pinned by behavior (generated event sequences
+  compared with the reference model); schema: `events.id` is the primary key (`PRAGMA table_info`)._
 - **ST-2: a deletion holds whatever the arrival order.** Deletion requests are stored and checked on every write: a
   deletion that arrives before its target, and an older version that arrives after a deletion, both stay deleted. A
   deleted id submitted again is rejected. An `a`-tag deletion applies only to replaceable and addressable kinds and only
   to versions with `created_at` up to the request's (NIP-09: "relays SHOULD delete all versions of the replaceable event
   up to the `created_at` timestamp of the deletion request event"). A deletion of a deletion has no effect (NIP-09:
-  "Publishing a deletion request event against a deletion request has no effect."). _Planned (1, 2). Pinned by behavior
-  (generated sequences with reordering, equal timestamps and deletions first)._
+  "Publishing a deletion request event against a deletion request has no effect."). _Enforced (main)_ for the reference
+  model: `apply` and `deletes` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-2", and the
+  fast-check property that every arrival order of a pool with deletions, equal timestamps and expirations reaches the
+  same stored events and `REQ` results). _Planned (2)_ for storage. _Pinned by behavior (generated sequences with
+  reordering, equal timestamps and deletions first)._
 - **ST-3: expired events are never served.** An event past its NIP-40 `expiration` is returned by neither `REQ` nor live
-  delivery, whether or not it is still stored. _Planned (2, 3). Pinned by behavior._
-- **ST-4: history is kept.** A replaced version is kept with `is_latest = 0`. A normal `REQ` returns current versions;
-  a `REQ` by `ids` also returns replaced ones. If a frequently replaced kind accumulates too many versions, a per-kind
-  retention count is the only thing that removes them. _Planned (2). Pinned by behavior._
+  delivery, whether or not it is still stored. _Enforced (main)_ for the reference model: `query` in
+  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-3": not returned from the `expiration` time on,
+  by `ids` either). _Planned (2, 3)_ for storage and live delivery. _Pinned by behavior._
+- **ST-4: history is kept.** A replaced version is kept with `is_latest = 0`. A normal `REQ` returns current versions; a
+  `REQ` by `ids` also returns replaced ones. If a frequently replaced kind accumulates too many versions, a per-kind
+  retention count is the only thing that removes them. _Enforced (main)_ for the reference model: `query` in
+  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-4"). _Planned (2)_ for storage. _Pinned by
+  behavior._
 - **ST-5: a retired key's events are history.** A retired key stays in the allowlist with the role `retired`. Its
   events stay stored and are not returned by a normal `REQ`. A new key's addressable events never replace the old key's,
   because the address includes the pubkey. _Planned (2). Pinned by behavior._
@@ -207,8 +231,11 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 - **ST-7: the stored event is exactly the verified event.** The stored JSON is rebuilt from the seven verified fields
   (`id`, `pubkey`, `created_at`, `kind`, `tags`, `content`, `sig`) in a canonical form, not copied from the received
   text. Unknown fields are dropped, and a field given more than once is stored with the value that was verified. `REQ`
-  responses, backups and restores use this canonical form. _Planned (2). Pinned by behavior: the stored JSON, parsed
-  again, equals the verified event._
+  responses, backups and restores use this canonical form. _Enforced (main)_ for the canonical form:
+  `canonicalEventJson` in `packages/core/src/canonical.ts` and `canonicalEvents` in `packages/core/src/model.ts`;
+  `packages/core/src/model.test.ts` ("ST-7": an event with an unknown field). _Gap: a field given more than once is not
+  tested; `JSON.parse` keeps the last value, which is the one `verifyEvent` checked._ _Planned (2)_ for storage. _Pinned
+  by behavior: the stored JSON, parsed again, equals the verified event._
 - **ST-8: restore never reverses a revocation or a retirement.** A key restored as retired stays retired, its events
   stay out of normal `REQ`s (ST-5), and a key revoked before the backup is not added back. No restore makes a key
   writable that the backup records as revoked or retired. _Planned (2)_ for the path, _(4)_ for backups of the

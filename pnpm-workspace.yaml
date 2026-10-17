@@ -4,6 +4,7 @@ packages:
 catalog:
   "@noble/curves": 2.4.0
   "@noble/hashes": 2.4.0
+  fast-check: 4.10.2
   nostr-tools: 2.25.2
   typescript: 7.0.2
   vitest: 5.0.3
