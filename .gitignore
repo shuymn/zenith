@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Package manager
+.pnpm-store/
+.pnpm-debug.log*
+
+# Build output
+dist/
+
+# Cloudflare local runtime
+.wrangler/
+.dev.vars
+.dev.vars.*
+
+# Test and coverage output
+coverage/
+
+# Logs
+npm-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# OS and editor noise
+.DS_Store
+*.tsbuildinfo

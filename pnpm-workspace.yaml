@@ -1,0 +1,12 @@
+packages:
+  - packages/*
+
+catalog:
+  typescript: 7.0.2
+  vitest: 5.0.3
+
+# Wait three days (in minutes), matching the minimumReleaseAge of the shared Renovate preset.
+minimumReleaseAge: 4320
+
+allowBuilds:
+  lefthook: false

@@ -1,0 +1,17 @@
+# Each tool tracks its major version; mise.lock pins the exact versions and
+# checksums, and .github/workflows/mise-update.yml advances it.
+[tools]
+node = "24"
+pnpm = "12"
+# Linters the shared security and gha workflows also run; the git hooks use
+# these so local checks match CI.
+actionlint = "1"
+betterleaks = "1"
+ghalint = "1"
+
+[settings]
+lockfile = true
+lockfile_platforms = ["macos-arm64", "linux-x64"]
+locked = true
+# Matches the minimumReleaseAge of the shared Renovate preset.
+minimum_release_age = "3d"

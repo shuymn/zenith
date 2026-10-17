@@ -1,0 +1,21 @@
+pre-commit:
+  commands:
+    oxfmt:
+      run: pnpm exec oxfmt --no-error-on-unmatched-pattern {staged_files}
+      stage_fixed: true
+    oxlint:
+      glob: "*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"
+      run: pnpm exec oxlint --type-aware --deny-warnings {staged_files}
+    actionlint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: mise exec -- actionlint {staged_files}
+    ghalint:
+      glob: ".github/workflows/*.{yml,yaml}"
+      run: mise exec -- ghalint run
+    betterleaks:
+      run: mise exec -- betterleaks git --pre-commit --staged --redact --no-banner --verbose --validation=false
+
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm exec commitlint --edit {1}
