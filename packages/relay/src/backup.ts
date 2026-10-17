@@ -2,8 +2,10 @@
  * The exported form of the vault (DATA-5): events as JSONL, one canonical event JSON (ST-7) per line, and the
  * allowlist as one JSON document with keys, roles, allowed kinds and the revoked keys.
  */
-import { isHex32, isRecord, parseJsonText } from "@zenith/core";
-import { isKeyRole, isValidGrantKinds, type AllowedKey, type AllowlistState, type RevokedKey } from "./allowlist.ts";
+import { parseJsonText } from "@zenith/core";
+import * as v from "valibot";
+import { isValidGrantKinds, type AllowedKey, type AllowlistState, type RevokedKey } from "./allowlist.ts";
+import { count, hex32, validate } from "./validation.ts";
 
 export const ALLOWLIST_BACKUP_VERSION = 1;
 
@@ -41,44 +43,52 @@ export function parseAllowlist(text: string): AllowlistParseResult {
   return state === undefined ? { ok: false, code: "bad-allowlist" } : { ok: true, state };
 }
 
+/** The exported form; the checks across entries (one owner, no key listed twice) follow in parseAllowlistState. */
+const ALLOWLIST_DOCUMENT = v.object({
+  version: v.literal(ALLOWLIST_BACKUP_VERSION),
+  keys: v.array(
+    v.variant("role", [
+      v.object({ pubkey: hex32, role: v.literal("owner"), kinds: v.optional(v.never()), added_at: count }),
+      v.object({
+        pubkey: hex32,
+        role: v.literal("importer"),
+        kinds: v.pipe(
+          v.array(v.number()),
+          v.check((kinds) => isValidGrantKinds(kinds)),
+        ),
+        added_at: count,
+      }),
+      v.object({
+        pubkey: hex32,
+        role: v.literal("retired"),
+        // A retired former owner keeps no kinds.
+        kinds: v.pipe(
+          v.array(v.number()),
+          v.check((kinds) => kinds.length === 0 || isValidGrantKinds(kinds)),
+        ),
+        added_at: count,
+      }),
+    ]),
+  ),
+  revoked: v.array(v.object({ pubkey: hex32, revoked_at: count })),
+});
+
 function parseAllowlistState(text: string): AllowlistState | undefined {
   const parsed = parseJsonText(text);
   if (!parsed.ok) return undefined;
-  const { value } = parsed;
-  if (!isRecord(value) || value["version"] !== ALLOWLIST_BACKUP_VERSION) return undefined;
-  const { keys, revoked } = value;
-  if (!Array.isArray(keys) || !Array.isArray(revoked)) return undefined;
-  const parsedKeys: AllowedKey[] = [];
-  const seen = new Set<string>();
-  for (const item of keys as unknown[]) {
-    const key = parseKey(item);
-    if (key === undefined || seen.has(key.pubkey)) return undefined;
-    seen.add(key.pubkey);
-    parsedKeys.push(key);
-  }
-  if (parsedKeys.filter((key) => key.role === "owner").length > 1) return undefined;
-  const parsedRevoked: RevokedKey[] = [];
-  for (const item of revoked as unknown[]) {
-    if (!isRecord(item) || !isHex32(item["pubkey"])) return undefined;
-    if (!isTimestamp(item["revoked_at"]) || seen.has(item["pubkey"])) return undefined;
-    seen.add(item["pubkey"]);
-    parsedRevoked.push({ pubkey: item["pubkey"], revokedAt: item["revoked_at"] });
-  }
-  return { keys: parsedKeys, revoked: parsedRevoked };
-}
-
-function parseKey(item: unknown): AllowedKey | undefined {
-  if (!isRecord(item)) return undefined;
-  const { pubkey, role, kinds, added_at: addedAt } = item;
-  if (!isHex32(pubkey) || !isKeyRole(role) || !isTimestamp(addedAt)) return undefined;
-  if (role === "owner") return kinds === undefined ? { pubkey, role, addedAt } : undefined;
-  if (!Array.isArray(kinds)) return undefined;
-  const values: unknown[] = kinds;
-  // A retired former owner keeps no kinds.
-  if (!(role === "retired" && values.length === 0) && !isValidGrantKinds(values)) return undefined;
-  return { pubkey, role, kinds: values.filter((kind): kind is number => typeof kind === "number"), addedAt };
-}
-
-function isTimestamp(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const document = validate(ALLOWLIST_DOCUMENT, parsed.value, "bad-allowlist");
+  if (!document.ok) return undefined;
+  const keys: AllowedKey[] = document.value.keys.map((key) =>
+    key.role === "owner"
+      ? { pubkey: key.pubkey, role: key.role, addedAt: key.added_at }
+      : { pubkey: key.pubkey, role: key.role, kinds: key.kinds, addedAt: key.added_at },
+  );
+  const revoked: RevokedKey[] = document.value.revoked.map((entry) => ({
+    pubkey: entry.pubkey,
+    revokedAt: entry.revoked_at,
+  }));
+  const pubkeys = [...keys, ...revoked].map((entry) => entry.pubkey);
+  if (new Set(pubkeys).size !== pubkeys.length) return undefined;
+  if (keys.filter((key) => key.role === "owner").length > 1) return undefined;
+  return { keys, revoked };
 }

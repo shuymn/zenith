@@ -3,6 +3,7 @@
  * wrangler.deploy.jsonc may set only the deployment values; everything else comes from wrangler.jsonc (DATA-2).
  */
 import { isRecord } from "@zenith/core";
+import { getNodeValue, parseTree, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { isOwnerPubkey, parseRelayUrl } from "../src/vars.ts";
 
 export class DeployConfigError extends Error {}
@@ -14,26 +15,19 @@ const VARS = ["OWNER_PUBKEY", "RELAY_URL"];
 
 type Json = Record<string, unknown>;
 
-/** Parses JSONC: JSON with comments and trailing commas, as wrangler reads it. */
+/**
+ * Parses JSONC as wrangler reads it: JSON with comments and trailing commas. Throws {@link DeployConfigError} for
+ * anything else, with the error's kind and offset only, never the text. Objects are built without a prototype
+ * (`getNodeValue`), so a `__proto__` key is an ordinary key, as with JSON.parse, never a prototype to inherit from.
+ */
 export function parseJsonc(text: string): unknown {
-  let out = "";
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (char === '"') {
-      const start = i;
-      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
-      out += text.slice(start, i + 1);
-    } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      out += "\n";
-    } else if (char === "/" && text[i + 1] === "*") {
-      i = text.indexOf("*/", i + 2) + 1;
-      if (i === 0) throw new DeployConfigError("unterminated comment");
-    } else {
-      out += char;
-    }
-  }
-  return JSON.parse(out.replaceAll(/,(\s*[\]}])/g, "$1"));
+  const errors: ParseError[] = [];
+  const root = parseTree(text, errors, { allowTrailingComma: true, disallowComments: false });
+  const [error] = errors;
+  if (error !== undefined) fail(`invalid JSONC: ${printParseErrorCode(error.error)} at offset ${error.offset}`);
+  if (root === undefined) fail("invalid JSONC: no value");
+  const value: unknown = getNodeValue(root);
+  return value;
 }
 
 function fail(message: string): never {

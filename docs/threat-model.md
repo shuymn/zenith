@@ -371,7 +371,9 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `packages/relay/src/backup.test.ts` ("ST-8": each merge rule, a restore that includes a retired key after which it
   stays retired and its events stay out of normal `REQ`s, a restore that does not list again a key the store revoked,
   and a backup that revoked the configured owner restoring nothing), `packages/relay/src/authorization.test.ts`
-  ("ST-8": opening with a revoked, retired or previous owner configured). _Pinned by behavior._ _Enforced (main)_ for
+  ("ST-8": opening with a revoked, retired or previous owner configured), `packages/relay/src/validation.test.ts`
+  ("ST-8": the allowlist of a backup checked against a Valibot schema, each malformed entry refusing the whole
+  allowlist). _Pinned by behavior._ _Enforced (main)_ for
   backups of the allowlist and their restore through the admin route: `packages/relay/src/admin.test.ts` ("ST-6, ST-8":
   a production backup with a retired, a revoked and an active importer restored into an empty relay, after which the
   retired and the revoked key write nothing). _Pinned by behavior._
@@ -421,10 +423,15 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   request costs no DO wake-up.
   Connections use the hibernation API: `ctx.acceptWebSocket`, with the text `ping` answered `pong` by
   `setWebSocketAutoResponse` (Nostr defines no ping message; WebSocket protocol pings are answered by the runtime). The
-  DO keeps no resident timer. _Enforced (main):_ the Worker in `packages/relay/src/index.ts`, and `Vault` in
-  `packages/relay/src/vault.ts`; `packages/relay/src/worker.test.ts` ("RES-3": NIP-11, a plain `GET`, a `POST`,
-  another path and an upgrade on another path are answered with no Durable Object created, by
-  `listDurableObjectIds`, also an unsigned admin request and a `GET` of the admin route),
+  DO keeps no resident timer. _Enforced (main):_ the Worker in `packages/relay/src/index.ts`, which dispatches with a
+  `switch` on the route that `routeOf` in `packages/relay/src/routes.ts` chooses by an exact comparison with the
+  configuration, and `Vault` in `packages/relay/src/vault.ts`; `packages/relay/src/worker.test.ts` ("RES-3":
+  NIP-11, a plain `GET`, a `POST`, another path and an upgrade on another path are answered with no Durable Object
+  created, by `listDurableObjectIds`, also an unsigned admin request and a `GET` of the admin route),
+  `packages/relay/src/routing.test.ts` ("RES-3": the relay's path with and without a query and on another host, a
+  double or percent-encoded slash, a relay path below the root percent-encoded or in another case, and a `HEAD`,
+  `POST` or `PUT` upgrade, each answered without the Vault namespace; `HEAD` answered with the status, headers and
+  body of `GET` for NIP-11, a 404, the admin route's 405 and a 503),
   `packages/relay/src/admin.test.ts` ("RES-3": every refused admin request answered with no use of the Vault
   namespace), `packages/relay/src/protocol.ws.test.ts` ("RES-3": the ping answered).
   _Pinned by behavior; and by source analysis, forbidden API:_ `packages/relay/src/source-analysis.test.ts` refuses a
@@ -476,7 +483,9 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   error class only, closes that subscriber and still answers the sender). _Enforced (main)_ for the admin route and
   backups: `packages/relay/src/admin.test.ts` ("DATA-1": restoring a backup whose events hold marker content, backing up
   and a refused request log nothing, and the responses hold no event content and no part of the `Authorization`
-  header; a failed cron run logs its reason code or error class only). _Pinned by log redaction._ Cloudflare's own
+  header; a failed cron run logs its reason code or error class only). An error thrown on a route fails the request
+  and is not logged: `packages/relay/src/routing.test.ts` ("DATA-1": an error whose message is a marker fails the
+  request and logs nothing at all). _Pinned by log redaction._ Cloudflare's own
   invocation logs record the request, and Tail Workers report its URL and headers with heuristic redaction, so they
   are turned off: `observability.logs.invocation_logs` is false in `packages/relay/wrangler.jsonc`
   ([operations.md](operations.md#logs-data-1)). _Pinned by configuration._ That the deployed Worker's logs hold only
@@ -516,7 +525,8 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   so each run writes new keys and none relies on writing a key again. A failure logs a reason code only and fails the
   run. `packages/relay/src/admin.test.ts` ("DATA-5": two cron runs at the same time write two complete backups under
   different keys, the manifest's contents, a backup on the owner's request, a write the bucket refuses leaving no
-  manifest, and a failed run's log). _Pinned by behavior._ The bucket lock (deletion and overwrite within retention
+  manifest, and a failed run's log), `packages/relay/src/validation.test.ts` ("DATA-5": a manifest of another version
+  or id, naming another key, or with a malformed sha256, size or count refuses the backup). _Pinned by behavior._ The bucket lock (deletion and overwrite within retention
   refused): _Planned (4), checked after deployment_ ([operations.md](operations.md#backups-data-5)); the local runtime
   has no bucket lock. Restore drills: _Planned (4)._ Blobs: _Planned (6)._
 
@@ -536,33 +546,46 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   minutes old, a `u` tag with another path, host, scheme, query or case, a method tag other than the request's, a
   missing or another body's `payload`; and a header built by nostr-tools' `nip98.getToken`). _Pinned by behavior._
   _Enforced (main)_ for the route: `authorizeAdminRequest` in `packages/relay/src/admin.ts`, the only place that creates
-  the `AuthorizedCommand` that `Vault.admin` takes, called by the Worker in `packages/relay/src/index.ts`;
+  the `AuthorizedCommand` that `Vault.admin` takes, called by the Worker in `packages/relay/src/index.ts` for a request
+  whose URL equals the configured admin URL (`routeOf` in `packages/relay/src/routes.ts`); the command is checked
+  against a Valibot schema (`parseAdminCommand`), and the `u` tag against `RelayConfig.adminUrl`;
   `packages/relay/src/admin.test.ts` ("OPS-1": a request signed by another key, without a header, with another URL,
   method, an old or future time, another kind, without a payload or with another body, with a forged signature, each
   answered 401 without the DO; another method, an oversized body, the admin path on another URL and a malformed
-  command). _Pinned by behavior; and by source analysis, forbidden pattern:_ `packages/relay/src/source-analysis.test.ts`
+  command), `packages/relay/src/routing.test.ts` ("OPS-1": the admin URL with a trailing or double slash, a
+  percent-encoded letter or slash, another case, a query, an empty query, another scheme, host or port answered 404
+  without the DO; the forms the runtime normalizes to it still matched; a `u` tag naming the request's URL rather than
+  the configured one refused), `packages/relay/src/validation.test.ts` ("OPS-1": each command shape accepted and
+  refused). _Pinned by behavior; and by source analysis, forbidden pattern:_ `packages/relay/src/source-analysis.test.ts`
   refuses `as AuthorizedCommand` outside `admin.ts`. A signed request can be sent again within its 60 seconds; see
   the accepted risks.
 - **OPS-2: an allowlist change closes every connection.** No subscription keeps the authority it had before the change.
   _Enforced (main)_ for the means: `closeAllConnections` of `Vault` in `packages/relay/src/vault.ts` closes every
   connection with code 1012; `packages/relay/src/protocol.ws.test.ts` ("OPS-2": an authenticated and an anonymous
   connection closed). _Enforced (main)_ for every allowlist change: `Vault.admin` in `packages/relay/src/vault.ts`
-  calls it when an `add`, `retire` or `revoke` reports `changed` (`AllowlistResult`), and when a restore reports
+  calls it when an `add`, `retire` or `revoke` reports a change (an ok `AllowlistResult`), and when a restore reports
   `allowlistChanged`; `packages/relay/src/admin.ws.test.ts` ("OPS-2": the owner's subscribed connection and an
   anonymous one closed with 1012 after each change through the admin route, and kept when nothing changed). _Pinned by
   behavior._ _Gap: no test has an open connection during a restore, because a restore needs an empty vault and the
   WebSocket tests share one._
-- **OPS-3: packages depend on lower layers only.** `packages/relay` and `packages/blossom` depend on `packages/core`;
-  `packages/core` depends on no other package (EV-7). _Enforced (main)_ for relay:
-  `packages/relay/src/source-analysis.test.ts` ("OPS-3"). _Pinned by source analysis, forbidden import: in a non-test
-  file of `packages/relay/src`, any specifier other than a relative path, `@zenith/core` or `cloudflare:workers`; and
-  the `dependencies` of `packages/relay/package.json` are exactly `@zenith/core`._ For blossom: _Planned (6)._
+- **OPS-3: packages depend on lower layers and on listed libraries only.** `packages/core` depends on `@noble` only
+  (EV-7). `packages/relay` and `packages/blossom` depend on `packages/core` and on a short allowlist of libraries, each
+  with its reason ([decisions.md](decisions.md)): for relay, `valibot` (input shapes). Development
+  dependencies of the scripts and the tests (such as `jsonc-parser` for the deployment script) are not part of the
+  deployed Worker and are outside this list. _Enforced (main)_ for relay: `packages/relay/src/source-analysis.test.ts`
+  ("OPS-3"). _Pinned by source analysis, forbidden import: in a non-test file of `packages/relay/src`, any specifier
+  other than a relative path, `cloudflare:workers` or an own entry of `RUNTIME_DEPENDENCIES` (`@zenith/core`,
+  `valibot`; a subpath such as `valibot/dist` is another entry, and a name of `Object.prototype` is none); and the `dependencies` of `packages/relay/package.json`
+  are exactly those entries._ For blossom: _Planned (6)._
 
 ### Supply chain (SUP)
 
 - **SUP-1: dependencies are locked and aged.** `pnpm-lock.yaml` pins every version, and `minimumReleaseAge` waits three
-  days before a release is installable. _Enforced (main):_ `pnpm-workspace.yaml`, `pnpm-lock.yaml`. _Pinned by
-  configuration. Gap: no dependency audit runs in CI._
+  days before a release is installable. A new dependency is added to the `catalog` of `pnpm-workspace.yaml` with an
+  exact version that is past `minimumReleaseAge`, referenced as `catalog:`, and, for a runtime dependency, added to
+  OPS-3's allowlist with its reason in [decisions.md](decisions.md). _Enforced (main):_ `pnpm-workspace.yaml`,
+  `pnpm-lock.yaml`. _Pinned by configuration. Gap: no dependency audit runs in CI, and nothing checks that a catalog
+  version is exact._
 - **SUP-2: CI runs no unpinned or privileged code for forks.** GitHub Actions are pinned by commit SHA, workflows start
   with no permissions and grant them per job, and no workflow uses `pull_request_target`, so fork PRs get no secrets.
   _Enforced (main):_ `.github/workflows/`, linted by `.github/workflows/gha.yml`. _Pinned by configuration and workflow

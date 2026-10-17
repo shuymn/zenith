@@ -1,3 +1,4 @@
+import { isRecord } from "@zenith/core";
 import { describe, expect, it } from "vitest";
 import { DeployConfigError, mergeDeployConfig, parseJsonc, splitArgs } from "../scripts/deploy-config.ts";
 
@@ -28,6 +29,17 @@ function refusal(deploy: unknown): string {
     throw error;
   }
   return "accepted";
+}
+
+/** A deployment file whose only route is `route`, as JSONC text. */
+function deployText(route: string): string {
+  return `{ "routes": [${route}], "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "backup-bucket" }],
+    "vars": { "OWNER_PUBKEY": "${OWNER}", "RELAY_URL": "wss://relay.example.com/" } }`;
+}
+
+/** Reads the deployment file as deploy.mjs does, merges it and writes it out: the configuration wrangler gets. */
+function mergedFromText(route: string): { routes: unknown } {
+  return JSON.parse(JSON.stringify(mergeDeployConfig(BASE, parseJsonc(deployText(route)), "../../src/index.ts")));
 }
 
 describe("mergeDeployConfig", () => {
@@ -109,6 +121,49 @@ describe("mergeDeployConfig", () => {
       a: "wss://x/",
       c: [1, 2],
     });
+  });
+});
+
+describe("parseJsonc", () => {
+  it("keeps comment and comma characters inside strings", () => {
+    const text = '{ "a": "x // y", "b": "/* z */", "c": "1, ]", "d": "\\"/*", /* end */ }';
+    expect(parseJsonc(text)).toEqual({ a: "x // y", b: "/* z */", c: "1, ]", d: '"/*' });
+  });
+
+  it("reads comments of both kinds and trailing commas in objects and arrays", () => {
+    expect(parseJsonc('// head\n/* block\n */ { "a": [1, /* x */ 2,], // tail\n "b": {}, }\n')).toEqual({
+      a: [1, 2],
+      b: {},
+    });
+  });
+
+  it.each([
+    ["an unterminated comment", '{ "a": 1 } /* x'],
+    ["an unterminated string", '{ "a": "x }'],
+    ["a missing comma", '{ "a": 1 "b": 2 }'],
+    ["single quotes", "{ 'a': 1 }"],
+    ["two values", "{} {}"],
+    ["nothing", ""],
+    ["a comment only", "// x"],
+  ])("refuses %s with DeployConfigError", (_name, text) => {
+    expect(() => parseJsonc(text)).toThrow(DeployConfigError);
+  });
+
+  // DATA-2: a `__proto__` key is data, as JSON.parse reads it. Taken as a prototype, the route would inherit a pattern
+  // on the relay's host, pass the route check and be written out as `{}`.
+  it("DATA-2: reads __proto__ as a key, so a route that is only __proto__ is refused", () => {
+    expect(mergedFromText('{ "pattern": "relay.example.com", "custom_domain": true }').routes).toEqual([
+      { pattern: "relay.example.com", custom_domain: true },
+    ]);
+    expect(() => mergedFromText('{ "__proto__": { "pattern": "relay.example.com", "custom_domain": true } }')).toThrow(
+      /every route must be on the host of RELAY_URL/,
+    );
+    const value = parseJsonc('{ "__proto__": { "a": 1 } }');
+    expect(isRecord(value) && Object.keys(value)).toEqual(["__proto__"]);
+  });
+
+  it("does not quote the text in its error", () => {
+    expect(() => parseJsonc('{ "OWNER_PUBKEY": "secret-looking" ')).toThrow(/^invalid JSONC: \w+ at offset \d+$/);
   });
 });
 

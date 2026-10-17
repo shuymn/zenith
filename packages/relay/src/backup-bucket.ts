@@ -6,8 +6,10 @@
  * The id starts with the time of the run in UTC and ends with random hex, so every run writes new keys. The bucket
  * lock refuses overwriting and deleting within retention; no run relies on writing a key again.
  */
-import { bytesToHex, decodeUtf8Strict, isHex32, isRecord, parseJsonText } from "@zenith/core";
+import { bytesToHex, decodeUtf8Strict, parseJsonText } from "@zenith/core";
+import * as v from "valibot";
 import type { Backup } from "./store.ts";
+import { count, hex32, validate } from "./validation.ts";
 
 export const BACKUP_PREFIX = "backups/";
 export const MANIFEST_VERSION = 1;
@@ -130,43 +132,25 @@ type ManifestParseResult =
   | { readonly ok: true; readonly manifest: BackupManifest }
   | { readonly ok: false; readonly code: "bad-manifest" };
 
-function parseManifest(bytes: Uint8Array, id: string, keys: ReturnType<typeof backupKeys>): ManifestParseResult {
-  const manifest = parseManifestFields(bytes, id, keys);
-  return manifest === undefined ? { ok: false, code: "bad-manifest" } : { ok: true, manifest };
-}
-
-function parseManifestFields(
-  bytes: Uint8Array,
-  id: string,
-  keys: ReturnType<typeof backupKeys>,
-): BackupManifest | undefined {
-  const parsed = parseJsonText(decodeUtf8Strict(bytes) ?? "");
-  if (!parsed.ok) return undefined;
-  const { value } = parsed;
-  if (!isRecord(value) || value["version"] !== MANIFEST_VERSION || value["id"] !== id) return undefined;
-  const { created_at: createdAt, events, allowlist } = value;
-  if (typeof createdAt !== "string") return undefined;
-  const eventsPart = parsePart(events, keys.events);
-  const allowlistPart = parsePart(allowlist, keys.allowlist);
-  if (eventsPart === undefined || allowlistPart === undefined || !isRecord(events)) return undefined;
-  const count = events["count"];
-  if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return undefined;
-  return {
-    version: MANIFEST_VERSION,
-    id,
-    created_at: createdAt,
-    events: { ...eventsPart, count },
-    allowlist: allowlistPart,
-  };
-}
-
 /** A part of the manifest, which must name the key the id gives: a manifest never points at another object. */
-function parsePart(value: unknown, key: string): Part | undefined {
-  if (!isRecord(value) || value["key"] !== key) return undefined;
-  const { sha256, bytes } = value;
-  if (!isHex32(sha256)) return undefined;
-  if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
-  return { key, sha256, bytes };
+function partSchema(key: string) {
+  return v.object({ key: v.literal(key), sha256: hex32, bytes: count });
+}
+
+/** The manifest of the backup `id`: its version, its own id, and parts that name the keys of that id. */
+function parseManifest(bytes: Uint8Array, id: string, keys: ReturnType<typeof backupKeys>): ManifestParseResult {
+  const text = decodeUtf8Strict(bytes);
+  const parsed = text === undefined ? undefined : parseJsonText(text);
+  if (parsed?.ok !== true) return { ok: false, code: "bad-manifest" };
+  const schema = v.object({
+    version: v.literal(MANIFEST_VERSION),
+    id: v.literal(id),
+    created_at: v.string(),
+    events: v.object({ ...partSchema(keys.events).entries, count }),
+    allowlist: partSchema(keys.allowlist),
+  });
+  const manifest = validate(schema, parsed.value, "bad-manifest");
+  return manifest.ok ? { ok: true, manifest: manifest.value } : manifest;
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
