@@ -2,6 +2,8 @@
 
 Zenith Vault is a private, single-user Nostr relay built on Cloudflare Workers.
 
+Security invariants and the threat model: [docs/threat-model.md](docs/threat-model.md).
+
 ## Development
 
 Tool versions come from `mise.toml`, with exact versions pinned in `mise.lock`.
