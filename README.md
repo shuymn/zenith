@@ -15,3 +15,6 @@ pnpm run fmt                # oxfmt check (pnpm run fmt:fix to apply)
 pnpm run typecheck          # TypeScript
 pnpm run test               # Vitest
 ```
+
+The GitHub repository settings are declared in `.github/infra.yaml`; review
+them with `gh infra plan` and apply them with `gh infra apply`.
