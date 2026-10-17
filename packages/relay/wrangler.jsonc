@@ -1,0 +1,10 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zenith-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-12",
+  "durable_objects": {
+    "bindings": [{ "name": "VAULT", "class_name": "Vault" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
+}

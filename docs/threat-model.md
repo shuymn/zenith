@@ -127,12 +127,17 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   ("created_at window": `now + 900` accepted, `now + 901` rejected, `0` accepted). _Pinned by behavior._
 - **EV-5: storage semantics come only from NIP-01's kind ranges.** Each kind is regular, replaceable, ephemeral,
   addressable or unknown by the ranges NIP-01 defines. _Enforced (main)_ for the classification: `classifyKind` in
-  `packages/core/src/kind.ts`; `packages/core/src/kind.test.ts` (every range boundary). _Pinned by behavior._ Its use by
-  the write path: _Planned (2)._
+  `packages/core/src/kind.ts`; `packages/core/src/kind.test.ts` (every range boundary). _Pinned by behavior._
+  _Enforced (main)_ for storage: `apply` in `packages/relay/src/store.ts` takes how to store each class (each, versioned, never) from
+  `classifyKind` through a `Record<KindClass, …>` table, so a class without an entry fails to compile;
+  `packages/relay/src/store.test.ts` ("WR-5", "ST-1", and the reference model comparison over regular, unknown (45),
+  replaceable, addressable and ephemeral kinds). _Pinned by behavior._
 - **EV-6: an event already expired on receipt is rejected.** An event whose NIP-40 `expiration` has passed answers `OK`
   false with `invalid:`. An `expiration` equal to the current time has passed. _Enforced (main)_ in the reference model:
   `apply` and `toOkResponse` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("EV-6"). _Pinned by
-  behavior._ The write path: _Planned (2)._
+  behavior._ _Enforced (main)_ in storage: `EventStore.apply` in `packages/relay/src/store.ts`;
+  `packages/relay/src/store.test.ts` ("EV-6", and the property that compares every write's outcome with the reference
+  model). _Pinned by behavior._ Answering `EVENT` with it: _Planned (3)._
 - **EV-7: `packages/core` is pure and depends on `@noble` only.** It imports no `cloudflare:*` module and no nostr-tools
   (nostr-tools' `verifyEvent` caches its result on the object, so it is used only in tests, as a cross-check). _Enforced
   (main):_ `packages/core/src/source-analysis.test.ts` ("EV-7, EV-2", "EV-7: declares only @noble packages"). _Pinned
@@ -160,11 +165,15 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   the owner's events. NIP-09: "Relays SHOULD delete or stop publishing any referenced events that have an identical
   `pubkey` as the deletion request." _Enforced (main)_ in the reference model: `deletes` in
   `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("WR-4": `e` and `a` tags of another pubkey, in either
-  order). _Pinned by behavior._ The write path: _Planned (2)._
+  order). _Pinned by behavior._ _Enforced (main)_ in storage: the deletion index (`deleted_ids`, `deleted_addresses`)
+  and `#applyDeletion` and `#isDeleted` in `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("WR-4",
+  and the reference model comparison). _Pinned by behavior._
 - **WR-5: ephemeral events are never stored.** Kinds 20000 to 29999 are not stored, kind 22242 included. NIP-42: "Relays
   MUST exclude `kind: 22242` events from being broadcasted to any client." _Enforced (main)_ in the reference model:
   `apply` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("WR-5": kinds 20000, 22242 and 29999 not
-  stored; 19999 and 30000 stored). _Pinned by behavior._ The write path and delivery: _Planned (2, 3)._
+  stored; 19999 and 30000 stored). _Pinned by behavior._ _Enforced (main)_ in storage: `EventStore.apply` in
+  `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("WR-5", and the reference model comparison).
+  _Pinned by behavior._ Delivery: _Planned (3)._
 
 ### Read authorization (RD)
 
@@ -198,8 +207,12 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   "In case of replaceable events with the same timestamp, the event with the lowest id (first in lexical order) should
   be retained". An id is stored once. _Enforced (main)_ for the reference model: `apply` and `query` in
   `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-1", including fast-check properties over arrival
-  order, resubmissions and created_at ties). _Planned (2)_ for storage. _Pinned by behavior (generated event sequences
-  compared with the reference model); schema: `events.id` is the primary key (`PRAGMA table_info`)._
+  order, resubmissions and created_at ties). _Enforced (main)_ for storage: `EventStore` in `packages/relay/src/store.ts`
+  (`events.is_latest`), schema in `packages/relay/src/schema.ts`; `packages/relay/src/store.test.ts` ("ST-1", and the
+  fast-check property that applies generated subsets, orders and resubmissions of a signed pool to the SQLite store and
+  to the reference model and compares every outcome, the stored events and the `REQ` results),
+  `packages/relay/src/schema.test.ts` ("ST-1"). _Pinned by behavior (generated event sequences compared with the
+  reference model); schema: `events.id` is the primary key (`PRAGMA table_info`)._
 - **ST-2: a deletion holds whatever the arrival order.** Deletion requests are stored and checked on every write: a
   deletion that arrives before its target, and an older version that arrives after a deletion, both stay deleted. A
   deleted id submitted again is rejected. An `a`-tag deletion applies only to replaceable and addressable kinds and only
@@ -208,17 +221,22 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   "Publishing a deletion request event against a deletion request has no effect."). _Enforced (main)_ for the reference
   model: `apply` and `deletes` in `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-2", and the
   fast-check property that every arrival order of a pool with deletions, equal timestamps and expirations reaches the
-  same stored events and `REQ` results). _Planned (2)_ for storage. _Pinned by behavior (generated sequences with
-  reordering, equal timestamps and deletions first)._
+  same stored events and `REQ` results). _Enforced (main)_ for storage: the deletion index in
+  `packages/relay/src/schema.ts` and `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("ST-2", and the
+  reference model comparison). _Pinned by behavior (generated sequences with reordering, equal timestamps and deletions
+  first)._
 - **ST-3: expired events are never served.** An event past its NIP-40 `expiration` is returned by neither `REQ` nor live
   delivery, whether or not it is still stored. _Enforced (main)_ for the reference model: `query` in
   `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-3": not returned from the `expiration` time on,
-  by `ids` either). _Planned (2, 3)_ for storage and live delivery. _Pinned by behavior._
+  by `ids` either). _Enforced (main)_ for storage: `EventStore.query` in `packages/relay/src/store.ts`;
+  `packages/relay/src/store.test.ts` ("ST-3", and the reference model comparison at two times). _Pinned by behavior._
+  Live delivery: _Planned (3)._
 - **ST-4: history is kept.** A replaced version is kept with `is_latest = 0`. A normal `REQ` returns current versions; a
   `REQ` by `ids` also returns replaced ones. If a frequently replaced kind accumulates too many versions, a per-kind
   retention count is the only thing that removes them. _Enforced (main)_ for the reference model: `query` in
-  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-4"). _Planned (2)_ for storage. _Pinned by
-  behavior._
+  `packages/core/src/model.ts`; `packages/core/src/model.test.ts` ("ST-4"). _Enforced (main)_ for storage:
+  `EventStore` in `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("ST-4", and the reference model
+  comparison). _Pinned by behavior._ No retention count exists yet.
 - **ST-5: a retired key's events are history.** A retired key stays in the allowlist with the role `retired`. Its
   events stay stored and are not returned by a normal `REQ`. A new key's addressable events never replace the old key's,
   because the address includes the pubkey. _Planned (2). Pinned by behavior._
@@ -233,9 +251,12 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   text. Unknown fields are dropped, and a field given more than once is stored with the value that was verified. `REQ`
   responses, backups and restores use this canonical form. _Enforced (main)_ for the canonical form:
   `canonicalEventJson` in `packages/core/src/canonical.ts` and `canonicalEvents` in `packages/core/src/model.ts`;
-  `packages/core/src/model.test.ts` ("ST-7": an event with an unknown field). _Gap: a field given more than once is not
-  tested; `JSON.parse` keeps the last value, which is the one `verifyEvent` checked._ _Planned (2)_ for storage. _Pinned
-  by behavior: the stored JSON, parsed again, equals the verified event._
+  `packages/core/src/model.test.ts` ("ST-7": an event with an unknown field). _Enforced (main)_ for storage:
+  `events.json` is written with `canonicalEventJson`, and `REQ` results are that column, in
+  `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("ST-7": an event received with an unknown field
+  and with `content` given twice is stored with the verified values; and the reference model comparison of the stored
+  JSON). _Pinned by behavior: the stored JSON, parsed again, equals the verified event._ Backups and restores:
+  _Planned (2, 4)._
 - **ST-8: restore never reverses a revocation or a retirement.** A key restored as retired stays retired, its events
   stay out of normal `REQ`s (ST-5), and a key revoked before the backup is not added back. No restore makes a key
   writable that the backup records as revoked or retired. _Planned (2)_ for the path, _(4)_ for backups of the
@@ -254,10 +275,21 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   Planned (3), see EV-1._ The other limits: _Planned (3)._
 - **RES-2: queries never splice input into SQL.** Every value is a bound parameter. A query uses at most 90 bound
   parameters (the DO allows 100); longer `ids` or `authors` lists run in chunks. There is no prefix matching, and tag
-  filters accept single-letter names only. _Planned (2). Pinned by behavior (injection strings in `#e` and `ids` return
-  zero events without an error) and by source analysis, forbidden pattern: a template literal with a `${` substitution,
-  or string concatenation, as the query argument of `sql.exec`; the only allowed generated text is a placeholder list
-  built from a count._
+  filters accept single-letter names only. _Enforced (main):_ SQL text is built only by the `sql` tag in
+  `packages/relay/src/sql.ts`: its literal parts are the text, and each substituted value is bound as `?` (a
+  substituted fragment is another `sql` tag result, so the only generated text is placeholders and literals).
+  `EventStore` in `packages/relay/src/store.ts` runs every statement through one `exec` call that refuses more than 90
+  parameters. A list of a filter (`ids`, `authors`, `kinds` or a tag) that does not fit runs in chunks whose results
+  are merged and limited again; a filter that would need more than 256 chunked queries (many long tag lists) pages
+  through the rows matching the lists that fit and checks the whole filter on each row. _Pinned by behavior:_
+  `packages/relay/src/store.test.ts` ("RES-2": injection strings in `ids` and `#e`, built directly because
+  `parseFilter` refuses non-hex values there, and in `#t`, return zero events without an error, and in `#d` find
+  exactly the event that has them; 1000 `ids`, 100 `authors`, both together, 120 `kinds` with and without a limit, 100 `#t`
+  values, and 19 or 20 tag lists, each compared with the reference model). _Pinned by source analysis, forbidden pattern:_
+  `packages/relay/src/source-analysis.test.ts` ("RES-2"): the query argument of every `exec(` (also `exec<T>(`) in a
+  non-test file of `packages/relay/src` must be a string literal or a template literal without `${`; the allowlist
+  holds only `query.text` in `packages/relay/src/store.ts`, the text of a `sql` tag result. The same test allows
+  reading `.sql` from a storage object only in `packages/relay/src/store.ts`.
 - **RES-3: public HTTP requests never reach the DO.** The Worker answers NIP-11 and every other public HTTP request
   itself. The DO is woken only for a WebSocket upgrade and the messages on that connection, the admin route (OPS-1),
   and the backup cron (DATA-5). Connections use the hibernation API: `ctx.acceptWebSocket`, with pings answered by
