@@ -35,7 +35,8 @@ Each invariant names how its test pins it.
 ## Deployment assumptions
 
 - One owner. The owner signs with a NIP-07 or NIP-46 signer; the owner's secret key is never on the server or in CI.
-- The relay Worker accepts WebSocket connections and answers everything else itself. One SQLite-backed Durable Object
+- The relay Worker accepts WebSocket connections and answers everything else itself. Its configuration is the owner's
+  public key (`OWNER_PUBKEY`) and the relay URL clients connect to (`RELAY_URL`), both Worker variables. One SQLite-backed Durable Object
   with a fixed name, the Vault DO, holds all relay state and uses the hibernation API.
 - Blossom runs as a separate Worker that stores blobs in a private R2 bucket. Its allowlist comes from the Vault DO,
   which is the single source of truth for allowed keys.
@@ -79,9 +80,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 | ------------------------------------------- | ---------- | ------------------------------------------------------------ | ------------------------------------------------- |
 | Event verification for every received event | R1–R4      | id and signature (EV-1)                                      | main: `packages/core/src/event.ts`, `kind.ts`     |
 | WebSocket `EVENT`                           | R1–R4      | signature, allowlist and the key's kinds; NIP-42 for NIP-70  | Planned (3)                                       |
-| WebSocket `REQ`, `CLOSE` and live delivery  | R1, R2     | NIP-42 as the owner                                          | Planned (3)                                       |
-| WebSocket `AUTH`                            | R1, R2, R4 | per-connection challenge, relay host, time window, signature | Planned (1, 3)                                    |
-| NIP-11 document and other HTTP requests     | R1         | none; answered by the Worker without waking the DO           | Planned (3)                                       |
+| WebSocket `REQ` and `CLOSE`                 | R1, R2     | NIP-42 as the owner                                          | main: `packages/relay/src/vault.ts`               |
+| Live delivery                               | R1, R2     | NIP-42 as the owner                                          | Planned (3)                                       |
+| WebSocket `AUTH`                            | R1, R2, R4 | per-connection challenge, relay host, time window, signature | main: `packages/relay/src/vault.ts`               |
+| NIP-11 document and other HTTP requests     | R1         | none; answered by the Worker without waking the DO           | main: `packages/relay/src/index.ts`, `nip11.ts`   |
 | Admin route: allowlist changes and restore  | R1, R2     | the owner's NIP-98 signature                                 | Planned (4)                                       |
 | Blossom upload                              | R1–R3      | BUD-11 token from the owner or an importer key               | Planned (6)                                       |
 | Blossom list and delete                     | R1–R3      | BUD-11 token from the owner                                  | Planned (6)                                       |
@@ -100,8 +102,15 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   successful verification fails the next one. _Enforced (main):_ `verifyEvent` and `verifyEventObject` in
   `packages/core/src/event.ts`; `packages/core/src/event.test.ts` ("tampering": a changed id character, modified
   content, modified signature, another pubkey with and without a recomputed id, another key's signature, objects mutated
-  after verification). _Pinned by behavior._ Every `EVENT` frame goes through `verifyEvent` on the received text (not
-  `verifyEventObject`), so that the size limit of RES-1 applies: _Planned (3)._
+  after verification). _Pinned by behavior._ A received event is verified from its received text with `verifyEvent`, so
+  that the size limit of RES-1 applies: `parseClientMessage` in `packages/core/src/message.ts` gives the event of an
+  `EVENT` or `AUTH` message only as the exact text of that array element (`eventText`), never as a parsed value.
+  _Enforced (main)_ for the text: `packages/core/src/message.test.ts` ("EV-1, RES-1": the element's exact text for any
+  JSON value and formatting, and an event over 256 KiB in a message under 512 KiB refused by `verifyEvent`). _Enforced
+  (main)_ for `AUTH`: `#auth` in `packages/relay/src/vault.ts`; `packages/relay/src/protocol.ws.test.ts` ("EV-1": a
+  signature that does not verify, and an AUTH event over 256 KiB). _Pinned by behavior; and by source analysis,
+  forbidden API:_ `packages/relay/src/source-analysis.test.ts` refuses `verifyEventObject` in every non-test file of
+  `packages/relay/src` except `store.ts` (restore, ST-6). For `EVENT`: _Planned (3)._
 - **EV-2: the id follows NIP-01's serialization.** NIP-01: "The following characters in the content field must be
   escaped as shown, and all other characters must be included verbatim". Tag strings follow the same rule. An id
   computed with the `JSON.stringify` form, which escapes the other control characters as `\u00XX`, is also accepted, and
@@ -192,26 +201,46 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 
 - **RD-1: only the authenticated owner reads.** A `REQ` from an unauthenticated connection answers `CLOSED` with
   `auth-required:`; from a connection authenticated with another key, `CLOSED` with `restricted:`. A refused `REQ` is
-  not registered. _Planned (3). Pinned by behavior._
+  not registered. An `AUTH` with a valid signature for this connection from a key that is not the owner or an importer
+  answers `OK` false with `restricted:`, and the connection counts as authenticated with another key. _Enforced
+  (main):_ `#req` and `#auth` in `packages/relay/src/vault.ts`, which read who the connection authenticated as from its
+  attachment (RD-3) and answer by a `Record` of refusals; `packages/relay/src/protocol.ws.test.ts` ("RD-1": an
+  unauthenticated `REQ`, then `AUTH` with nothing delivered; `REQ` authenticated as a key not on the allowlist, an
+  importer and a retired key; after each refusal, and after the `AUTH`, the connections' attachments hold no such
+  subscription, while an accepted one is there). _Pinned by behavior._
 - **RD-2: AUTH binds to this relay, this connection and now.** The relay sends a random challenge when the connection
   opens. An AUTH event is accepted only if it is kind 22242, its `created_at` is within ±600 seconds, its `challenge`
   tag equals the challenge this connection was sent, the host of its `relay` tag equals the configured relay host (not
-  the request's `Host`), and its signature verifies (EV-1). _Enforced (main)_ for the verification: `verifyAuthEvent` in
+  the request's `Host`), and its signature verifies (EV-1). The challenge stays valid for the connection (NIP-42: "The
+  challenge is valid for the duration of the connection or until another challenge is sent by the relay"). _Enforced
+  (main)_ for the verification: `verifyAuthEvent` in
   `packages/core/src/auth.ts`, which takes only a `VerifiedEvent` (EV-1); `packages/core/src/auth.test.ts` ("RD-2":
   kinds, `created_at` at ±600 and ±601 seconds and 11 minutes old, another or missing challenge, another host,
   subdomain, host suffix, userinfo, port and scheme). The relay host comparison lowercases the host, ignores ws versus
-  wss, the path and a trailing slash, and drops the scheme's default port. _Pinned by behavior._ The connection
-  (challenge per connection, configured host): _Planned (3)._
+  wss, the path and a trailing slash, and drops the scheme's default port. _Pinned by behavior._ _Enforced (main)_ for
+  the connection: `fetch` and `#auth` in `packages/relay/src/vault.ts` send 32 random bytes as the challenge when the
+  connection opens and pass the configured `RELAY_URL` (`parseRelayConfig` in `packages/relay/src/config.ts`);
+  `packages/relay/src/protocol.ws.test.ts` ("RD-2": a fresh challenge per connection, another connection's challenge,
+  a `relay` tag naming the request's Host instead of the configured URL, 11 minutes old, another kind). _Pinned by
+  behavior._
 - **RD-3: authentication survives hibernation, and nothing else grants it.** The challenge, the authenticated pubkey
   and the subscriptions are kept in the WebSocket attachment and restored after hibernation. A connection without an
-  attachment is unauthenticated. _Planned (3). Pinned by behavior (the DO is evicted, then the same connection sends
-  `REQ`)._
+  attachment is unauthenticated. An attachment that is not of the expected shape counts as none. _Enforced (main):_
+  `readState` and `writeState` in `packages/relay/src/connection.ts`, the only access to the attachment;
+  `packages/relay/src/protocol.ws.test.ts` ("RD-3": after `evictDurableObject`, checked to give a new instance, the
+  owner's connection is served a `REQ`, an unauthenticated one is refused, and the challenge still verifies; a
+  connection whose attachment was removed after the owner's `AUTH` is closed on its next `REQ` (RES-4), with nothing
+  registered). _Pinned by behavior (the DO is evicted, then the same connection sends `REQ`)._
 - **RD-4: live delivery is authorized like a `REQ`.** Every delivery passes the RD-1 checks for the connection at
   sending time. A `REQ` sent before `AUTH` receives nothing after `AUTH`. Expired events (ST-3) are not delivered.
-  _Planned (3). Pinned by behavior._
+  _Enforced (main)_ for the registration: a refused `REQ` is never registered (RD-1), so nothing reaches it after
+  `AUTH`; `packages/relay/src/protocol.ws.test.ts` ("RD-1: answers an unauthenticated REQ"). Live delivery: _Planned
+  (3). Pinned by behavior._
 - **RD-5: NIP-11 discloses only the minimum.** The document holds minimal relay information and the limits, sets
-  `restricted_writes` to true and `auth_required` to false (writes do not need `AUTH`). _Planned (3). Pinned by
-  behavior._
+  `restricted_writes` to true and `auth_required` to false (writes do not need `AUTH`). It names no contact and no
+  `pubkey`, so it does not disclose the owner. _Enforced (main):_ `packages/relay/src/nip11.ts`;
+  `packages/relay/src/worker.test.ts` ("RD-5": the whole document, the owner's key absent, the CORS headers NIP-11
+  requires). _Pinned by behavior._
 
 ### Storage semantics (ST)
 
@@ -307,8 +336,16 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   the application's. _Enforced (main)_ in `packages/core/src/limits.ts` and `packages/core/src/event.ts`, tested in
   `packages/core/src/event.test.ts` ("size limits", at and one past each bound), _pinned by behavior_: the event size
   in `verifyEvent` only (it measures the received text; `verifyEventObject` has no text to measure), and the tag count
-  and tag size in both. _Gap: nothing yet guarantees that the WebSocket entry passes received text to `verifyEvent`;
-  Planned (3), see EV-1._ The other limits: _Planned (3)._
+  and tag size in both. The WebSocket entry gives `verifyEvent` the received text of the event (EV-1): _Enforced
+  (main)_ for `AUTH`, _Planned (3)_ for `EVENT`. _Enforced (main)_ for the message size: `parseClientMessage` in
+  `packages/core/src/message.ts` measures the UTF-8 bytes before `JSON.parse`; `packages/core/src/message.test.ts`
+  ("RES-1": at and one past 512 KiB, UTF-8 rather than UTF-16, oversized text that is not JSON) and
+  `packages/relay/src/protocol.ws.test.ts` ("RES-1": a message over 512 KiB answered with `NOTICE`). _Enforced (main)_
+  for the subscriptions, filters and attachment: `#req` in `packages/relay/src/vault.ts` (`maxSubscriptions` in
+  `packages/core/src/limits.ts`, `parseFilters`, and `writeState` in `packages/relay/src/connection.ts`, which refuses a
+  state over 15 KiB of JSON); `packages/relay/src/protocol.ws.test.ts` ("RES-1": the 21st subscription refused and a
+  replacement accepted, 11 filters, a subscription that does not fit the attachment, which is not registered). _Pinned
+  by behavior._
 - **RES-2: queries never splice input into SQL.** Every value is a bound parameter. A query uses at most 90 bound
   parameters (the DO allows 100); longer `ids` or `authors` lists run in chunks. There is no prefix matching, and tag
   filters accept single-letter names only. _Enforced (main):_ SQL text is built only by the `sql` tag in
@@ -327,13 +364,30 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   holds only `query.text` in `packages/relay/src/store.ts`, the text of a `sql` tag result. The same test allows
   reading `.sql` from a storage object only in `packages/relay/src/store.ts`.
 - **RES-3: public HTTP requests never reach the DO.** The Worker answers NIP-11 and every other public HTTP request
-  itself. The DO is woken only for a WebSocket upgrade and the messages on that connection, the admin route (OPS-1),
-  and the backup cron (DATA-5). Connections use the hibernation API: `ctx.acceptWebSocket`, with pings answered by
-  `setWebSocketAutoResponse`. The DO keeps no resident timer. _Planned (3). Pinned by source analysis, forbidden API: a
-  WebSocket `.accept()` call (only `ctx.acceptWebSocket`), and `setInterval` in DO code; and checked in stage 4 by
-  metrics (no DO wake-ups other than these reasons)._
+  itself. The DO is woken only for a WebSocket upgrade on the relay's path and the messages on that connection, the
+  alarm that closes connections past their RES-4 deadline, the admin route (OPS-1), and the backup cron (DATA-5).
+  Connections use the hibernation API: `ctx.acceptWebSocket`, with the text `ping` answered `pong` by
+  `setWebSocketAutoResponse` (Nostr defines no ping message; WebSocket protocol pings are answered by the runtime). The
+  DO keeps no resident timer. _Enforced (main):_ the Worker in `packages/relay/src/index.ts`, and `Vault` in
+  `packages/relay/src/vault.ts`; `packages/relay/src/worker.test.ts` ("RES-3": NIP-11, a plain `GET`, a `POST`,
+  another path and an upgrade on another path are answered with no Durable Object created, by
+  `listDurableObjectIds`), `packages/relay/src/protocol.ws.test.ts` ("RES-3": the ping answered).
+  _Pinned by behavior; and by source analysis, forbidden API:_ `packages/relay/src/source-analysis.test.ts` refuses a
+  `.accept()` call and `setInterval` in every non-test file of `packages/relay/src`, with an empty allowlist. _Checked
+  in stage 4 by metrics (no DO wake-ups other than these reasons): Planned (4)._
 - **RES-4: a connection not authenticated as an allowlisted key is closed after 30 seconds.** An `AUTH` with a key
-  that is not on the allowlist neither lifts nor extends this deadline. _Planned (3). Pinned by behavior._
+  that is not on the allowlist neither lifts nor extends this deadline. Only the keys that may write (the owner and
+  importers) lift it; a retired key does not. The deadline is kept in the attachment and enforced by the DO's alarm,
+  which closes the connections past it with code 1008 and schedules the next deadline, and by the message handler, which
+  closes a connection past it without verifying, storing or logging the message, so a client that ignores the close
+  cannot keep using the connection; a connection without an attachment is past it. A message on a connection that is
+  no longer open is ignored. _Enforced (main):_ `fetch`, `webSocketMessage`, `#auth` and `alarm` in
+  `packages/relay/src/vault.ts`;
+  `packages/relay/src/protocol.ws.test.ts` ("RES-4": an idle connection closed, one before its deadline kept, `AUTH`
+  with a key not on the allowlist or a retired key then idle closed, the owner and an importer kept, a connection whose
+  attachment was lost closed, an idle connection closed after the DO is evicted, an owner `AUTH` past the deadline
+  answered by a close with no `OK` and no log before the alarm runs, and messages on a closed connection answered with
+  nothing and no state change). _Pinned by behavior (the clock is moved past the deadline and the alarm run)._
 
 ### Media (MED)
 
@@ -354,8 +408,14 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 ### Data and keys (DATA)
 
 - **DATA-1: logs carry no event content and no AUTH events.** Workers Logs keep `console` output for 7 days, so event
-  bodies and AUTH events are never logged. _Planned (3, 4). Pinned by log redaction: marker content and a marker AUTH
-  event pass through `EVENT`, `REQ`, `AUTH` and their failure paths, and no `console` call contains them._
+  bodies and AUTH events are never logged. Only `logEvent` in `packages/relay/src/log.ts` writes to the console, and
+  every field it takes is typed by a closed set (an event name, an error class, a message type, a configuration
+  error) or a number. _Enforced (main)_ for `AUTH`, `REQ`, malformed messages and an unexpected failure:
+  `packages/relay/src/log-redaction.ws.test.ts` ("DATA-1": marker content, filters and AUTH events through accepted
+  and refused `AUTH`, `REQ` and their failure paths log nothing; a failure whose error message holds markers logs the
+  error class only). _Pinned by log redaction; and by source analysis, forbidden API:_
+  `packages/relay/src/source-analysis.test.ts` refuses `console` in every non-test file of `packages/relay/src` except
+  `log.ts`. For `EVENT`: _Planned (3)_; for the admin route: _Planned (4)._
 - **DATA-2: the owner's secret key is never on the server or in CI.** No code path takes it, and no secret holds it.
   _Planned (all stages). Pinned by review._
 - **DATA-3: importer keys and the upstream token live only in Worker secrets.** Each source has its own key, limited to
@@ -384,10 +444,14 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 - **OPS-1: the admin route is the owner's alone.** Allowlist changes and restores require a NIP-98 event signed by the
   owner whose URL, method and time match the request. _Planned (4). Pinned by behavior._
 - **OPS-2: an allowlist change closes every connection.** No subscription keeps the authority it had before the change.
-  _Planned (4). Pinned by behavior._
+  _Enforced (main)_ for the means: `closeAllConnections` of `Vault` in `packages/relay/src/vault.ts` closes every
+  connection with code 1012; `packages/relay/src/protocol.ws.test.ts` ("OPS-2": an authenticated and an anonymous
+  connection closed). Calling it on every allowlist change: _Planned (4). Pinned by behavior._
 - **OPS-3: packages depend on lower layers only.** `packages/relay` and `packages/blossom` depend on `packages/core`;
-  `packages/core` depends on no other package (EV-7). _Planned (3, 6). Pinned by source analysis, forbidden import: a
-  specifier that crosses the package graph in the other direction._
+  `packages/core` depends on no other package (EV-7). _Enforced (main)_ for relay:
+  `packages/relay/src/source-analysis.test.ts` ("OPS-3"). _Pinned by source analysis, forbidden import: in a non-test
+  file of `packages/relay/src`, any specifier other than a relative path, `@zenith/core` or `cloudflare:workers`; and
+  the `dependencies` of `packages/relay/package.json` are exactly `@zenith/core`._ For blossom: _Planned (6)._
 
 ### Supply chain (SUP)
 

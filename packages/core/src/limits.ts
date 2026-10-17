@@ -42,3 +42,16 @@ export type AuthLimits = {
 export const DEFAULT_AUTH_LIMITS: AuthLimits = Object.freeze({
   maxClockSkewSeconds: 600,
 });
+
+/** Limits applied to a WebSocket connection. */
+export type ConnectionLimits = {
+  /** Maximum UTF-8 byte length of one received message, checked before it is parsed. */
+  readonly maxMessageBytes: number;
+  /** Maximum number of open subscriptions on one connection. */
+  readonly maxSubscriptions: number;
+};
+
+export const DEFAULT_CONNECTION_LIMITS: ConnectionLimits = Object.freeze({
+  maxMessageBytes: 512 * 1024,
+  maxSubscriptions: 20,
+});
