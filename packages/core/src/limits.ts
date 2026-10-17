@@ -32,3 +32,13 @@ export const DEFAULT_FILTER_LIMITS: FilterLimits = Object.freeze({
   maxLimit: 500,
   maxFilterValues: 1000,
 });
+
+/** Limits applied to NIP-42 AUTH events. */
+export type AuthLimits = {
+  /** How far `created_at` may be from the current time, in either direction, in seconds. */
+  readonly maxClockSkewSeconds: number;
+};
+
+export const DEFAULT_AUTH_LIMITS: AuthLimits = Object.freeze({
+  maxClockSkewSeconds: 600,
+});

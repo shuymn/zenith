@@ -1,4 +1,5 @@
-export type KindClass = "regular" | "replaceable" | "ephemeral" | "addressable" | "unknown";
+export const KIND_CLASSES = ["regular", "replaceable", "ephemeral", "addressable", "unknown"] as const;
+export type KindClass = (typeof KIND_CLASSES)[number];
 
 /**
  * Classifies an event kind by its storage semantics as defined in NIP-01.

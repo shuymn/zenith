@@ -15,6 +15,14 @@ export type NostrEvent = {
 
 export type UnsignedEvent = Omit<NostrEvent, "id" | "sig">;
 
+declare const verified: unique symbol;
+
+/**
+ * An event whose structure, id and signature were checked by {@link verifyEvent} or {@link verifyEventObject},
+ * the only functions that create one. APIs that must not see unverified input take this type.
+ */
+export type VerifiedEvent = NostrEvent & { readonly [verified]: true };
+
 export type EventRejectionCode =
   | "too-large"
   | "malformed-json"
@@ -43,7 +51,7 @@ export type EventRejection = {
   eventId?: string;
 };
 
-export type EventVerification = { ok: true; event: NostrEvent } | { ok: false; error: EventRejection };
+export type EventVerification = { ok: true; event: VerifiedEvent } | { ok: false; error: EventRejection };
 
 export type VerifyEventOptions = {
   /** Current time in unix seconds. Defaults to the system clock. */
@@ -174,7 +182,9 @@ function verifyParsed(value: unknown, limits: EventLimits, now: number | undefin
   };
   if (!matchesId(event)) return fail("id-mismatch", "id does not match the event data");
   if (!verifySignature(sig, eventId, pubkey)) return fail("bad-signature", "signature verification failed");
-  return { ok: true, event };
+  // The id and signature were just verified, so this is the one place that brands an event.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+  return { ok: true, event: event as VerifiedEvent };
 }
 
 function verifySignature(sig: string, id: string, pubkey: string): boolean {
