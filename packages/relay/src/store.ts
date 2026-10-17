@@ -345,8 +345,12 @@ export class EventStore {
       VALUES (${event.id}, ${event.pubkey}, ${event.kind}, ${event.created_at}, ${address?.d ?? null},
         ${replaced ? 0 : 1}, ${expiration}, ${canonicalEventJson(event)})`);
     if (address !== undefined && !replaced) {
-      this.#run(sql`UPDATE events SET is_latest = 0
-        WHERE pubkey = ${address.pubkey} AND kind = ${address.kind} AND d_tag = ${address.d} AND id <> ${event.id}`);
+      // Only the previous current version becomes history: the first other row of the address in the order of
+      // events_by_address, so one row is read and written however long the history is.
+      this.#run(sql`UPDATE events SET is_latest = 0 WHERE id = (SELECT id FROM events
+        WHERE pubkey = ${address.pubkey} AND kind = ${address.kind} AND d_tag = ${address.d} AND id <> ${event.id}
+          AND is_latest = 1
+        ORDER BY created_at DESC, id ASC LIMIT 1)`);
     }
     for (const [name, value] of event.tags) {
       // NIP-01: "Only the first value in any given tag is indexed."
@@ -373,12 +377,14 @@ export class EventStore {
 
   // NIP-01: "In case of replaceable events with the same timestamp, the event with the lowest id
   // (first in lexical order) should be retained".
+  // Only the stored winner is compared, the first row of the address in the order of events_by_address, so one row
+  // is read however long the history is.
   #hasNewerVersion(event: VerifiedEvent, address: Address): boolean {
-    const newer = this.#run(sql`SELECT 1 FROM events
+    const [winner] = this.#run<{ created_at: number; id: string }>(sql`SELECT created_at, id FROM events
       WHERE pubkey = ${address.pubkey} AND kind = ${address.kind} AND d_tag = ${address.d}
-        AND (created_at > ${event.created_at} OR (created_at = ${event.created_at} AND id < ${event.id}))
-      LIMIT 1`);
-    return newer.toArray().length > 0;
+      ORDER BY created_at DESC, id ASC LIMIT 1`).toArray();
+    if (winner === undefined) return false;
+    return winner.created_at > event.created_at || (winner.created_at === event.created_at && winner.id < event.id);
   }
 
   /** Records a stored deletion request in the deletion index and removes the events it deletes. */

@@ -10,6 +10,7 @@ export const LOG_EVENTS = [
   "zenith.config.invalid",
   "zenith.store.unavailable",
   "zenith.message.failed",
+  "zenith.delivery.failed",
   "zenith.alarm.failed",
 ] as const;
 export type LogEvent = (typeof LOG_EVENTS)[number];

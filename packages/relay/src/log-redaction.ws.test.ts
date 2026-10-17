@@ -112,4 +112,79 @@ describe("DATA-1: log redaction", () => {
     logs.expectNone([ERROR, CONTENT, auth.id, auth.sig]);
     expect(logs.lines).toEqual(['["{\\"event\\":\\"zenith.message.failed\\",\\"error\\":\\"Error\\"}"]']);
   });
+
+  it("logs nothing from EVENT, its refusals and live delivery", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const event = (template: Parameters<typeof signVerified>[0], key = KEY_OWNER) =>
+      signVerified({ created_at: now, content: CONTENT, tags: [["t", FILTER]], ...template }, key);
+    const { client: subscriber, challenge } = await open();
+    const auth = authEvent(KEY_OWNER, challenge);
+    subscriber.send(["AUTH", auth]);
+    subscriber.send(["REQ", "live", { "#t": [FILTER], limit: 0 }]);
+    expect(await subscriber.drain()).toEqual([
+      ["OK", auth.id, true, ""],
+      ["EOSE", "live"],
+    ]);
+    const logs = captureLogs();
+    const { client } = await open();
+    const live = event({});
+    const events = [
+      live,
+      live,
+      event({ kind: 20001 }),
+      event({ kind: 22242 }),
+      event({}, KEY_STRANGER),
+      event({ tags: [["t", FILTER], ["-"]] }),
+      event({
+        tags: [
+          ["t", FILTER],
+          ["expiration", String(now - 1)],
+        ],
+      }),
+      { ...event({ content: `${CONTENT} forged` }), sig: live.sig },
+      event({ content: CONTENT.repeat(11_000) }),
+    ];
+    const markers = [CONTENT, FILTER];
+    for (const sent of events) {
+      markers.push(sent.id, sent.sig);
+      client.send(["EVENT", sent]);
+    }
+    const answers = await client.drain();
+    expect(answers.map((answer) => answer[0])).toEqual([...Array.from({ length: 8 }, () => "OK"), "NOTICE"]);
+    // The live paths ran: the stored and the ephemeral event were delivered.
+    expect((await subscriber.drain()).map((message) => message[2])).toEqual([live, events[2]]);
+    logs.expectNone(markers);
+    expect(logs.lines).toEqual([]);
+  });
+
+  it("logs a failed delivery by error class only, and still answers the sender", async () => {
+    const { client: subscriber, challenge } = await open();
+    const auth = authEvent(KEY_OWNER, challenge);
+    subscriber.send(["AUTH", auth]);
+    subscriber.send(["REQ", "live", { "#t": [FILTER], limit: 0 }]);
+    expect(await subscriber.drain()).toEqual([
+      ["OK", auth.id, true, ""],
+      ["EOSE", "live"],
+    ]);
+    const { client } = await open();
+    const logs = captureLogs();
+    // Delivering to the subscriber fails with a message full of secrets; every other send goes through.
+    const original: unknown = Object.getOwnPropertyDescriptor(WebSocket.prototype, "send")?.value;
+    if (typeof original !== "function") throw new Error("WebSocket.prototype.send is not a method");
+    vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, message) {
+      if (typeof message === "string" && message.startsWith('["EVENT","live"')) {
+        throw new Error(`${ERROR} ${message}`);
+      }
+      Reflect.apply(original, this, [message]);
+    });
+    const event = signVerified(
+      { created_at: Math.floor(Date.now() / 1000), content: `${CONTENT} delivery`, tags: [["t", FILTER]] },
+      KEY_OWNER,
+    );
+    client.send(["EVENT", event]);
+    expect(await client.next()).toEqual(["OK", event.id, true, ""]);
+    expect(await subscriber.closed).toEqual({ code: 1011, reason: "error: internal error" });
+    logs.expectNone([ERROR, CONTENT, FILTER, event.id, event.sig]);
+    expect(logs.lines).toEqual(['["{\\"event\\":\\"zenith.delivery.failed\\",\\"error\\":\\"Error\\"}"]']);
+  });
 });

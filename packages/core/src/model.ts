@@ -165,7 +165,7 @@ function deletes(request: VerifiedEvent, target: VerifiedEvent): boolean {
 }
 
 /** NIP-40: expired from the `expiration` timestamp on. A first `expiration` tag that is not a decimal integer is ignored. */
-function isExpired(event: VerifiedEvent, now: number): boolean {
+export function isExpired(event: VerifiedEvent, now: number): boolean {
   const value = event.tags.find((tag) => tag[0] === "expiration")?.[1];
   if (value === undefined || !/^\d+$/.test(value)) return false;
   return Number(value) <= now;

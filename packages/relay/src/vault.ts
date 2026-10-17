@@ -4,18 +4,22 @@
  * in its attachment (RD-3).
  */
 import {
+  canonicalEventJson,
   DEFAULT_CONNECTION_LIMITS,
   formatClosedMessage,
   formatNoticeMessage,
   formatOkMessage,
   parseClientMessage,
+  matchesAnyFilter,
   parseFilters,
+  referenceModel,
   verifyAuthEvent,
   verifyEvent,
   type ClientMessage,
+  type VerifiedEvent,
 } from "@zenith/core";
 import { DurableObject } from "cloudflare:workers";
-import type { KeyRole } from "./allowlist.ts";
+import { toRejectionResponse, type KeyRole } from "./allowlist.ts";
 import { parseRelayConfig, type RelayConfig } from "./config.ts";
 import {
   openedState,
@@ -58,6 +62,29 @@ const READ_REFUSALS: Record<Exclude<ReadAccess, "owner">, string> = {
   "other-key": "restricted: only the owner may read",
   // NIP-42: "for when a client has not performed `AUTH` and the relay requires that to fulfill the query".
   unauthenticated: "auth-required: authenticate as the owner to read",
+};
+
+/**
+ * Which outcomes of a write are delivered live (RD-4): a stored event, and an ephemeral one, which is delivered and
+ * never stored (WR-5). A version stored as history is not current, so a REQ without `ids` would not return it either.
+ */
+const DELIVERED: Record<referenceModel.ApplyOutcome, boolean> = {
+  stored: true,
+  "not-stored-ephemeral": true,
+  "stored-as-history": false,
+  duplicate: false,
+  "rejected-deleted": false,
+  "rejected-expired": false,
+};
+
+/** NIP-42: "Relays MUST exclude `kind: 22242` events from being broadcasted to any client." */
+const AUTH_KIND = 22242;
+
+/** WR-2, how a protected event from a connection not authenticated as its author is answered. */
+const PROTECTED_REFUSALS: Record<Exclude<ReadAccess, "owner">, string> = {
+  // NIP-70's example: `"auth-required: this event may only be published by its author"`.
+  unauthenticated: "auth-required: this event may only be published by its author",
+  "other-key": "restricted: this event may only be published by its author",
 };
 
 type Opened = { readonly config: RelayConfig; readonly store: EventStore };
@@ -159,10 +186,66 @@ export class Vault extends DurableObject<Env> {
         writeState(ws, withoutSubscription(state, message.subscriptionId));
         return;
       case "EVENT":
-        sendNotice(ws, "unsupported: EVENT is not accepted yet");
+        this.#event(ws, state, message.eventText, opened);
         return;
       default:
         return message satisfies never;
+    }
+  }
+
+  /**
+   * NIP-01 EVENT: verified from its received text (EV-1, RES-1), checked for NIP-70 (WR-2), written by the store,
+   * which checks the allowlist (WR-1, WR-3) and expiration (EV-6), and delivered live when stored or ephemeral.
+   */
+  #event(ws: WebSocket, state: ConnectionState, eventText: string, { config, store }: Opened): void {
+    const now = Math.floor(Date.now() / 1000);
+    const verified = verifyEvent(eventText, { now });
+    if (!verified.ok) {
+      sendOk(ws, verified.error.eventId, false, formatOkMessage(verified.error));
+      return;
+    }
+    const { event } = verified;
+    // WR-2. NIP-70: "The default behavior of a relay MUST be to reject any event that contains `["-"]`", unless the
+    // client authenticated with "the same pubkey as the event being published".
+    if (isProtected(event) && !state.pubkeys.includes(event.pubkey)) {
+      sendOk(ws, event.id, false, PROTECTED_REFUSALS[state.authenticated ? "other-key" : "unauthenticated"]);
+      return;
+    }
+    const result = store.apply(event, now);
+    if (!result.ok) {
+      const { message } = toRejectionResponse(result.rejection);
+      sendOk(ws, event.id, false, message);
+      return;
+    }
+    const { accepted, message } = referenceModel.toOkResponse(result.outcome);
+    sendOk(ws, event.id, accepted, message);
+    if (DELIVERED[result.outcome] && event.kind !== AUTH_KIND) this.#deliver(event, config.vault.owner);
+  }
+
+  /**
+   * Live delivery (RD-4): to every open connection that is, at this moment, authenticated as the owner and within its
+   * deadline, for each subscription whose filters match. An expired event is never delivered (ST-3). A connection
+   * whose send fails is closed; the others still receive the event.
+   */
+  #deliver(event: VerifiedEvent, owner: string): void {
+    const now = Date.now();
+    if (referenceModel.isExpired(event, Math.floor(now / 1000))) return;
+    const json = canonicalEventJson(event);
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const state = readState(ws);
+      if (state === undefined || isPastDeadline(state, now) || readAccess(state, owner) !== "owner") continue;
+      for (const subscription of state.subscriptions) {
+        const filters = parseFilters(subscription.filters);
+        if (!filters.ok || !matchesAnyFilter(event, filters.filters)) continue;
+        try {
+          ws.send(`["EVENT",${JSON.stringify(subscription.id)},${json}]`);
+        } catch (error) {
+          logEvent("zenith.delivery.failed", { error: errorName(error) });
+          closeQuietly(ws, CLOSE_UNAVAILABLE, "error: internal error");
+          break;
+        }
+      }
     }
   }
 
@@ -255,6 +338,11 @@ export class Vault extends DurableObject<Env> {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > deadline) await this.ctx.storage.setAlarm(deadline);
   }
+}
+
+/** NIP-70: "The tag is a simple tag with a single item: `["-"]`." A `-` tag with more items is treated alike. */
+function isProtected(event: VerifiedEvent): boolean {
+  return event.tags.some((tag) => tag[0] === "-");
 }
 
 /** RES-4: whether the connection is past its deadline at `now` (milliseconds). */
