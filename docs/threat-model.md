@@ -151,7 +151,18 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
 - **WR-1: a write needs a valid signature, an allowlisted key and a kind that key may write.** `AUTH` is not required
   for writes (except WR-2). The owner may write every kind except 62; the blog importer only kinds 30023 and 5; the
   Mastodon importer only kinds 1 and 5. A key removed from the allowlist or marked retired writes nothing. Rejections
-  use the standard `OK` prefixes. _Planned (2). Pinned by behavior._
+  use the standard `OK` prefixes: `blocked:` for a key that is not listed or is retired (NIP-01: "blocked: please
+  register your pubkey at ..."), `restricted:` for a listed key writing a kind outside its grant (NIP-42: "the key used
+  to perform it is still not allowed by the relay or is exceeding its authorization"). The owner is the one key given by the
+  `OWNER_PUBKEY` configuration, parsed into a `VaultConfig` that the store requires; opening the store with another
+  owner retires the previous one, and a configured owner that the allowlist records as revoked or retired keeps the
+  store from opening (ST-8). An importer is added with at least one kind and never kind 62; the owner cannot be
+  added, retired or revoked; a retired key cannot be added again. _Enforced (main)_ in storage: `checkWrite` and
+  `parseVaultConfig` in `packages/relay/src/allowlist.ts`, called by `EventStore.apply` in
+  `packages/relay/src/store.ts` before anything is stored, and the `allowed_keys` table;
+  `packages/relay/src/authorization.test.ts` ("WR-1": the owner's kinds, the blog and Mastodon importers' kinds at each side of their grant, a key not listed, a
+  retired and a revoked key, a key added later, a configured owner change, and every allowlist refusal). _Pinned by
+  behavior._ Answering `EVENT` with it: _Planned (3)._
 - **WR-2: a protected event is accepted only from its authenticated author.** An event with the `["-"]` tag is accepted
   only when the connection authenticated with NIP-42 as the event's `pubkey`. NIP-70: "The default behavior of a relay
   MUST be to reject any event that contains `["-"]`." _Planned (3). Pinned by behavior._
@@ -159,8 +170,10 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   requests included (NIP-62: "Kind `62` requests a specific relay to delete everything, including NIP-09 Deletion
   Events, from the `.pubkey` until its `.created_at`"). That conflicts with keeping the signer's history, deletion
   requests included (ST-2, ST-4), so kind 62 answers `OK` false with `blocked:`, and NIP-62 is not listed in `supported_nips`. NIP-62 says "Paid relays or relays that restrict who can
-  post MUST also follow the request to vanish"; Zenith does not implement NIP-62 at all. _Planned (2). Pinned by
-  behavior._
+  post MUST also follow the request to vanish"; Zenith does not implement NIP-62 at all. _Enforced (main)_ in storage:
+  `checkWrite` in `packages/relay/src/allowlist.ts`, which refuses kind 62 before looking at the key, and grants that
+  never include it; `packages/relay/src/authorization.test.ts` ("WR-3": from the owner, an importer and a key not
+  listed). _Pinned by behavior._
 - **WR-4: a deletion request affects only events of its own pubkey.** An importer key's kind 5 therefore never deletes
   the owner's events. NIP-09: "Relays SHOULD delete or stop publishing any referenced events that have an identical
   `pubkey` as the deletion request." _Enforced (main)_ in the reference model: `deletes` in
@@ -239,13 +252,24 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   comparison). _Pinned by behavior._ No retention count exists yet.
 - **ST-5: a retired key's events are history.** A retired key stays in the allowlist with the role `retired`. Its
   events stay stored and are not returned by a normal `REQ`. A new key's addressable events never replace the old key's,
-  because the address includes the pubkey. _Planned (2). Pinned by behavior._
+  because the address includes the pubkey. A `REQ` by `ids` still returns them, as it returns replaced versions
+  (ST-4). The events of a revoked key are treated the same way. _Enforced (main):_ `EventStore.query` in
+  `packages/relay/src/store.ts`, which limits filters without `ids` to keys whose role is `owner` or `importer`;
+  `packages/relay/src/authorization.test.ts` ("ST-5", "DATA-4"). _Pinned by behavior._
 - **ST-6: restore accepts only signed events and rebuilds the same state.** The restore path is separate from `EVENT`
   and only the owner can use it (OPS-1). It restores the events and the allowlist (keys, roles, allowed kinds and
   retired state; a retired state cannot be derived from signed events). It checks each event's id and signature only,
   so events of revoked or retired keys, expired events, protected events and deletion requests are restored, and it
   rebuilds the current versions and the deletion index. A restored vault answers the same `REQ`s as before, and what was
-  deleted stays deleted. _Planned (2)_ for the path, _(4)_ for its authorization. _Pinned by behavior._
+  deleted stays deleted. _Enforced (main)_ for the path: `EventStore.restore` in `packages/relay/src/store.ts` restores
+  into a store without events, in one transaction, checks each event with `verifyEventObject` without the received
+  limits, stores it with the write semantics except expiration on receipt (ephemeral events are still not stored,
+  WR-5), and refuses the whole restore on the first event that fails; `packages/relay/src/backup.test.ts` ("ST-6": the
+  same events, allowlist and `REQ` results; events of other keys, expired, protected, kind 5 and kind 62 compared with
+  the reference model; the deletion index rebuilt from deletion requests alone, so a deleted id and a version up to an
+  `a` deletion are refused afterwards and a later version is stored; a forged event restoring nothing; and the fast-check property that exports a store built from
+  generated writes, retirements and revocations, restores it into a new store and compares the stored events, the
+  allowlist and `REQ` results at two times). _Pinned by behavior._ Its authorization: _Planned (4)._
 - **ST-7: the stored event is exactly the verified event.** The stored JSON is rebuilt from the seven verified fields
   (`id`, `pubkey`, `created_at`, `kind`, `tags`, `content`, `sig`) in a canonical form, not copied from the received
   text. Unknown fields are dropped, and a field given more than once is stored with the value that was verified. `REQ`
@@ -255,12 +279,24 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   `events.json` is written with `canonicalEventJson`, and `REQ` results are that column, in
   `packages/relay/src/store.ts`; `packages/relay/src/store.test.ts` ("ST-7": an event received with an unknown field
   and with `content` given twice is stored with the verified values; and the reference model comparison of the stored
-  JSON). _Pinned by behavior: the stored JSON, parsed again, equals the verified event._ Backups and restores:
-  _Planned (2, 4)._
+  JSON). _Pinned by behavior: the stored JSON, parsed again, equals the verified event._ _Enforced (main)_ for the
+  export and restore in storage: `EventStore.export` gives the `events.json` column as it is, and `EventStore.restore`
+  stores it again through `canonicalEventJson`; `packages/relay/src/backup.test.ts` ("DATA-5", "ST-6"). Writing the
+  backup: _Planned (4)._
 - **ST-8: restore never reverses a revocation or a retirement.** A key restored as retired stays retired, its events
   stay out of normal `REQ`s (ST-5), and a key revoked before the backup is not added back. No restore makes a key
-  writable that the backup records as revoked or retired. _Planned (2)_ for the path, _(4)_ for backups of the
-  allowlist. _Pinned by behavior (a restore that includes a retired key)._
+  writable that the backup records as revoked or retired. Revoked keys are recorded (`revoked_keys`) and exported, so
+  a restore knows them. When the store already has an allowlist, per key the more restrictive state wins: revoked over
+  retired over writable; a writable key keeps the store's entry, so a backup never widens its kinds; and only the
+  configured owner is the owner (a backup's other owner is restored as retired). When the store or the backup records
+  the configured owner as revoked or retired, the restore is refused and nothing changes, and the store does not open
+  with such a configuration (`EventStore.open`), since making that key the owner would reverse it.
+  _Enforced (main)_ for the path:
+  `mergeAllowlists` in `packages/relay/src/allowlist.ts`, used by `EventStore.restore` in `packages/relay/src/store.ts`;
+  `packages/relay/src/backup.test.ts` ("ST-8": each merge rule, a restore that includes a retired key after which it
+  stays retired and its events stay out of normal `REQ`s, a restore that does not list again a key the store revoked,
+  and a backup that revoked the configured owner restoring nothing), `packages/relay/src/authorization.test.ts`
+  ("ST-8": opening with a revoked, retired or previous owner configured). _Pinned by behavior._ Backups of the allowlist: _Planned (4)._
 
 ### Resources (RES)
 
@@ -326,10 +362,21 @@ key protection, encryption layered on top of R2, and search. Writes are closed b
   its kinds (WR-1) and to upload (MED-2). Nothing secret is stored in GitHub. _Planned (importer, on hold)._
 - **DATA-4: a leaked key is revoked by removing it, and a key is rotated without rewriting history.** Removing a key
   from the allowlist revokes it at once (WR-1, OPS-2). To rotate an importer key, the new key is added, the source is
-  imported again under it, and then the old key is marked retired (ST-5). _Planned (2, 4). Pinned by behavior._
+  imported again under it, and then the old key is marked retired (ST-5). A revoked key is recorded and is never
+  listed again, by an add or a restore. Every allowlist operation reports whether it changed the allowlist, so that the
+  caller closes every connection when it did (OPS-2). _Enforced (main)_ in storage: `addKey`, `retireKey` and
+  `revokeKey` of `EventStore` in `packages/relay/src/store.ts`; `packages/relay/src/authorization.test.ts` ("DATA-4":
+  a revoked key refused at once and never added again, its events kept as history, and a rotation in which the old
+  key's addressable events do not replace the new key's). _Pinned by behavior._ The admin route: _Planned (4)._
 - **DATA-5: backups cannot be deleted or overwritten for 30 days.** The stored event JSON (ST-7) and the allowlist (keys, roles,
   allowed kinds and retired state) are exported daily, and blobs are copied daily, to a separate bucket. The bucket lock is set before the first backup, and every object key
-  includes the date, so each run writes new objects. Backups keep the stored form byte for byte. _Planned (4)_ for events,
+  includes the date, so each run writes new objects. Backups keep the stored form byte for byte. _Enforced (main)_ for
+  the exported form: `EventStore.export` in `packages/relay/src/store.ts` gives every stored event, replaced versions
+  included, as JSONL lines of the stored canonical JSON sorted by id, and the allowlist as one JSON document, both read
+  to the end in one transaction (in memory, at the vault's size) so that a write after the export never joins it
+  (`formatAllowlist` and `parseAllowlist` in `packages/relay/src/backup.ts`: keys, roles, kinds, and revoked keys);
+  `packages/relay/src/backup.test.ts` ("DATA-5", including a key added and events written after the export). _Planned
+  (4)_ for writing events and the allowlist to the bucket,
   _(6)_ for blobs. _Pinned by behavior (deletion and overwrite within retention are refused) and by restore drills._
 
 ### Operations (OPS)

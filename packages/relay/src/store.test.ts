@@ -11,7 +11,7 @@ import { env } from "cloudflare:workers";
 import * as fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { EventStore } from "./store.ts";
-import { filterOf, publicKeyOf, signVerified, testSecretKey } from "./test-support.ts";
+import { filterOf, openStore, publicKeyOf, signVerified, testSecretKey } from "./test-support.ts";
 
 const KEY_A = testSecretKey("A");
 const KEY_B = testSecretKey("B");
@@ -23,10 +23,19 @@ function ev(template: Partial<NostrEvent>, key: Uint8Array = KEY_A): VerifiedEve
   return signVerified({ created_at: 100, ...template }, key);
 }
 
-/** Runs `callback` inside a new Vault DO with a store opened on its SQLite storage. */
-async function withStore<T>(callback: (store: EventStore, storage: DurableObjectStorage) => T): Promise<T> {
+/**
+ * Runs `callback` inside a new Vault DO with a store opened on its SQLite storage, owned by A, with B and `importers`
+ * as importers. Every key that writes in these tests is listed, so the store's results are those of the reference
+ * model, whose input already passed write authorization.
+ */
+async function withStore<T>(
+  callback: (store: EventStore, storage: DurableObjectStorage) => T,
+  importers: readonly (readonly [string, readonly number[]])[] = [],
+): Promise<T> {
   const stub = env.VAULT.get(env.VAULT.newUniqueId());
-  return runInDurableObject(stub, (_instance, state) => callback(new EventStore(state.storage), state.storage));
+  return runInDurableObject(stub, (_instance, state) =>
+    callback(openStore(state.storage, A, [[B, [0, 1, 5]], ...importers]), state.storage),
+  );
 }
 
 /**
@@ -37,7 +46,7 @@ function applyBoth(store: EventStore, events: readonly VerifiedEvent[], now = NO
   for (const event of events) {
     const expected = referenceModel.apply(model, event, now);
     model = expected.state;
-    expect(store.apply(event, now)).toBe(expected.outcome);
+    expect(store.apply(event, now)).toEqual({ ok: true, outcome: expected.outcome });
   }
   return model;
 }
@@ -283,11 +292,14 @@ describe("RES-2: lists longer than the bound parameter limit run in chunks", () 
   ];
 
   it.each(cases)("RES-2: answers %s like the reference model", async (_name, value) => {
-    await withStore((store) => {
-      const model = applyBoth(store, events);
-      const result = expectSameQuery(store, model, [filterOf(value)]);
-      expect(result.length).toBeGreaterThan(0);
-    });
+    await withStore(
+      (store) => {
+        const model = applyBoth(store, events);
+        const result = expectSameQuery(store, model, [filterOf(value)]);
+        expect(result.length).toBeGreaterThan(0);
+      },
+      authors.map((pubkey) => [pubkey, [1, 30000, 30001, 30002]] as const),
+    );
   });
 });
 

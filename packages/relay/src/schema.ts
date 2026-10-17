@@ -69,6 +69,22 @@ export const SCHEMA: SchemaDeclaration = {
       ],
       withoutRowid: true,
     },
+    // WR-1: the keys that may write. `kinds` is a JSON array of the kinds an importer (or a retired importer) had;
+    // the owner's is empty and means every kind but 62.
+    allowed_keys: {
+      columns: [
+        column("pubkey", "TEXT", true, 1),
+        column("role", "TEXT", true),
+        column("kinds", "TEXT", true),
+        column("added_at", "INTEGER", true),
+      ],
+      withoutRowid: false,
+    },
+    // DATA-4, ST-8: keys removed from the allowlist; neither an add nor a restore lists them again.
+    revoked_keys: {
+      columns: [column("pubkey", "TEXT", true, 1), column("revoked_at", "INTEGER", true)],
+      withoutRowid: false,
+    },
   },
   indexes: {
     // REQ without authors or kinds, newest first.
@@ -121,6 +137,21 @@ export const MIGRATIONS: readonly Migration[] = [
         until INTEGER NOT NULL,
         PRIMARY KEY (pubkey, kind, d_tag)
       ) WITHOUT ROWID`,
+    ],
+  },
+  {
+    version: 2,
+    statements: [
+      sql`CREATE TABLE IF NOT EXISTS allowed_keys (
+        pubkey TEXT NOT NULL PRIMARY KEY,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'importer', 'retired')),
+        kinds TEXT NOT NULL,
+        added_at INTEGER NOT NULL
+      )`,
+      sql`CREATE TABLE IF NOT EXISTS revoked_keys (
+        pubkey TEXT NOT NULL PRIMARY KEY,
+        revoked_at INTEGER NOT NULL
+      )`,
     ],
   },
 ];

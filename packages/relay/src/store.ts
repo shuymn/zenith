@@ -13,7 +13,25 @@ import {
   type NostrEvent,
   type referenceModel,
   type VerifiedEvent,
+  verifyEventObject,
 } from "@zenith/core";
+import {
+  checkWrite,
+  isKeyRole,
+  isPubkey,
+  isValidGrantKinds,
+  mergeAllowlists,
+  ownerConflict,
+  OWNER_CONFLICTS,
+  type OwnerConflict,
+  type AllowedKey,
+  type AllowlistResult,
+  type AllowlistState,
+  type KeyGrant,
+  type VaultConfig,
+  type WriteRejection,
+} from "./allowlist.ts";
+import { formatAllowlist, parseAllowlist } from "./backup.ts";
 import { MIGRATIONS, MIGRATIONS_TABLE } from "./schema.ts";
 import { list, MAX_BOUND_PARAMETERS, Sql, sql, type SqlValue } from "./sql.ts";
 
@@ -42,31 +60,99 @@ type Row = { id: string; created_at: number; json: string };
 /** One list attribute of a filter: its values, and the condition for a chunk of them. */
 type ListCondition = { readonly values: readonly SqlValue[]; readonly where: (chunk: readonly SqlValue[]) => Sql };
 
+export type WriteResult =
+  | { readonly ok: true; readonly outcome: ApplyOutcome }
+  | { readonly ok: false; readonly rejection: WriteRejection };
+
+export type OpenResult =
+  | { readonly ok: true; readonly store: EventStore }
+  | { readonly ok: false; readonly error: OwnerConflict };
+
+export const RESTORE_ERRORS = ["not-empty", "bad-allowlist", "bad-event", ...OWNER_CONFLICTS] as const;
+export type RestoreError = (typeof RESTORE_ERRORS)[number];
+/**
+ * `events` counts the events stored. `allowlistChanged` true means the caller closes every connection (OPS-2).
+ * `line` is the 1-based line of the event that failed verification.
+ */
+export type RestoreResult =
+  | { readonly ok: true; readonly events: number; readonly allowlistChanged: boolean }
+  | { readonly ok: false; readonly error: RestoreError; readonly line?: number };
+
+/** What {@link EventStore.export} gives and {@link EventStore.restore} takes (DATA-5). */
+export type Backup = {
+  /** The lines of the events' JSONL: each a canonical event JSON (ST-7), without the line break. */
+  readonly events: readonly string[];
+  /** The allowlist as one JSON document. */
+  readonly allowlist: string;
+};
+
+class RestoreAbort extends Error {
+  readonly error: RestoreError;
+  readonly line: number | undefined;
+  constructor(error: RestoreError, line?: number) {
+    super(error);
+    this.error = error;
+    this.line = line;
+  }
+}
+
+/**
+ * The vault's storage: events and the allowlist, on the SQLite database of the Vault Durable Object. Writes enter
+ * through {@link apply}, which checks the allowlist first (WR-1); restores through {@link restore}, which checks only
+ * the id and signature (ST-6). Its storage results equal those of the reference model in packages/core/src/model.ts
+ * (`referenceModel`) for writes the allowlist accepts, and the tests compare the two.
+ */
 export class EventStore {
   // The only reference to the database: SQL runs through #run alone.
   readonly #storage: DurableObjectStorage;
+  readonly #config: VaultConfig;
 
-  /** Opens the store on a Durable Object's storage and applies any pending migration. */
-  constructor(storage: DurableObjectStorage) {
+  private constructor(storage: DurableObjectStorage, config: VaultConfig) {
     this.#storage = storage;
-    this.#migrate();
+    this.#config = config;
   }
 
-  /** Applies one write at time `now` (unix seconds), atomically. The input already passed write authorization. */
-  apply(event: VerifiedEvent, now: number): ApplyOutcome {
-    const storage = STORAGE[classifyKind(event.kind)];
-    // WR-5. NIP-40: "An expiration timestamp does not affect storage of ephemeral events."
-    if (storage === "never") return "not-stored-ephemeral";
-    const expiration = expirationOf(event);
-    // EV-6. NIP-40: "Relays SHOULD drop any events that are published to them if they are expired."
-    if (expiration !== null && expiration <= now) return "rejected-expired";
-    return this.#storage.transactionSync(() => this.#write(event, storage === "versioned", expiration));
+  /**
+   * Opens the store on a Durable Object's storage, applies any pending migration and makes the configured key the
+   * one owner (a previous owner becomes retired). `now` is the time recorded for an owner listed for the first time.
+   * ST-8: when the allowlist records the configured key as revoked or retired, nothing changes and the store does not
+   * open.
+   */
+  static open(storage: DurableObjectStorage, config: VaultConfig, now: number): OpenResult {
+    const store = new EventStore(storage, config);
+    store.#migrate();
+    const error = store.#storage.transactionSync(() => {
+      const conflict = ownerConflict(store.listKeys(), config);
+      if (conflict === undefined) store.#ensureOwner(now);
+      return conflict;
+    });
+    return error === undefined ? { ok: true, store } : { ok: false, error };
+  }
+
+  /**
+   * Applies one write at time `now` (unix seconds), atomically, after checking that the event's key may write its
+   * kind (WR-1, WR-3). The event's id and signature were checked by its {@link VerifiedEvent} type.
+   */
+  apply(event: VerifiedEvent, now: number): WriteResult {
+    return this.#storage.transactionSync((): WriteResult => {
+      const rejection = checkWrite(event, this.#keyOf(event.pubkey));
+      if (rejection !== undefined) return { ok: false, rejection };
+      const storage = STORAGE[classifyKind(event.kind)];
+      // WR-5. NIP-40: "An expiration timestamp does not affect storage of ephemeral events."
+      if (storage === "never") return { ok: true, outcome: "not-stored-ephemeral" };
+      const expiration = expirationOf(event);
+      // EV-6. NIP-40: "Relays SHOULD drop any events that are published to them if they are expired."
+      if (expiration !== null && expiration <= now) return { ok: true, outcome: "rejected-expired" };
+      return { ok: true, outcome: this.#write(event, storage === "versioned", expiration) };
+    });
   }
 
   /**
    * The canonical JSON (ST-7) of the stored events a REQ with these filters returns at time `now`: per filter, the
    * matching events newest first (ties by lower id) up to the filter's limit; then the union, without duplicates, in
-   * the same order. A filter with `ids` also returns replaced versions (ST-4). Expired events are never returned (ST-3).
+   * the same order. A filter with `ids` also returns replaced versions (ST-4) and the events of keys that are retired
+   * or no longer listed; any other filter returns only events of the owner and importers (ST-5). Expired events are
+   * never returned (ST-3).
    */
   query(filters: readonly Filter[], now: number, limits: Partial<FilterLimits> = {}): string[] {
     const rows = new Map<string, Row>();
@@ -83,6 +169,114 @@ export class EventStore {
       .map((row) => row.json);
   }
 
+  /** Adds an importer key with the kinds it may write (WR-1). The owner comes from the configuration only. */
+  addKey(pubkey: string, grant: KeyGrant, now: number): AllowlistResult {
+    if (!isPubkey(pubkey)) return { changed: false, reason: "bad-pubkey" };
+    if (!isValidGrantKinds(grant.kinds)) return { changed: false, reason: "bad-kinds" };
+    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    return this.#storage.transactionSync((): AllowlistResult => {
+      if (this.#isRevoked(pubkey)) return { changed: false, reason: "revoked-key" };
+      if (this.#keyOf(pubkey) !== undefined) return { changed: false, reason: "already-listed" };
+      const kinds = [...new Set(grant.kinds)].toSorted((a, b) => a - b);
+      this.#insertKey({ pubkey, role: grant.role, kinds, addedAt: now });
+      return { changed: true };
+    });
+  }
+
+  /** Marks a key retired (ST-5, DATA-4): it writes nothing, and its events become history. */
+  retireKey(pubkey: string): AllowlistResult {
+    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    return this.#storage.transactionSync((): AllowlistResult => {
+      const key = this.#keyOf(pubkey);
+      if (key === undefined) return { changed: false, reason: "not-listed" };
+      if (key.role === "retired") return { changed: false, reason: "unchanged" };
+      this.#run(sql`UPDATE allowed_keys SET role = 'retired' WHERE pubkey = ${pubkey}`);
+      return { changed: true };
+    });
+  }
+
+  /** Removes a key from the allowlist (DATA-4) and records it as revoked, so that it is never listed again (ST-8). */
+  revokeKey(pubkey: string, now: number): AllowlistResult {
+    if (pubkey === this.#config.owner) return { changed: false, reason: "owner-key" };
+    return this.#storage.transactionSync((): AllowlistResult => {
+      if (this.#isRevoked(pubkey)) return { changed: false, reason: "unchanged" };
+      if (this.#keyOf(pubkey) === undefined) return { changed: false, reason: "not-listed" };
+      this.#run(sql`DELETE FROM allowed_keys WHERE pubkey = ${pubkey}`);
+      this.#run(sql`INSERT INTO revoked_keys (pubkey, revoked_at) VALUES (${pubkey}, ${now})`);
+      return { changed: true };
+    });
+  }
+
+  /** The allowlist, sorted by pubkey. */
+  listKeys(): AllowlistState {
+    const keys = this.#run<{ pubkey: string; role: string; kinds: string; added_at: number }>(
+      sql`SELECT pubkey, role, kinds, added_at FROM allowed_keys ORDER BY pubkey`,
+    )
+      .toArray()
+      .map(toAllowedKey);
+    const revoked = this.#run<{ pubkey: string; revoked_at: number }>(
+      sql`SELECT pubkey, revoked_at FROM revoked_keys ORDER BY pubkey`,
+    )
+      .toArray()
+      .map((row) => ({ pubkey: row.pubkey, revokedAt: row.revoked_at }));
+    return { keys, revoked };
+  }
+
+  /**
+   * The vault as a backup (DATA-5): every stored event, replaced versions included, in canonical form sorted by id,
+   * and the allowlist. Both are read to the end in one transaction before returning, so the backup is one consistent
+   * state and no later write joins it. A vault this size fits in memory.
+   */
+  export(): Backup {
+    return this.#storage.transactionSync(() => ({
+      events: this.canonicalEvents(),
+      allowlist: formatAllowlist(this.listKeys()),
+    }));
+  }
+
+  /**
+   * Rebuilds an empty store from a backup (ST-6), in one transaction: nothing is restored unless everything is.
+   * Each event is checked for its id and signature only; the allowlist, expiration on receipt and NIP-70 do not
+   * apply, so events of revoked or retired keys, expired, protected and deletion events come back. They are stored
+   * with the usual semantics, which rebuilds the current versions and the deletion index. The allowlist is merged by
+   * {@link mergeAllowlists}, so a restore never lists a revoked key again or makes a retired one writable (ST-8).
+   */
+  restore(backup: Backup): RestoreResult {
+    const allowlist = parseAllowlist(backup.allowlist);
+    if (allowlist === undefined) return { ok: false, error: "bad-allowlist" };
+    try {
+      return this.#storage.transactionSync((): RestoreResult => {
+        if (this.#run(sql`SELECT 1 FROM events LIMIT 1`).toArray().length > 0) throw new RestoreAbort("not-empty");
+        let count = 0;
+        let line = 0;
+        for (const text of backup.events) {
+          line++;
+          const event = verifyRestoredEvent(text);
+          if (event === undefined) throw new RestoreAbort("bad-event", line);
+          const storage = STORAGE[classifyKind(event.kind)];
+          // WR-5: an ephemeral event is never stored, whatever its source.
+          if (storage === "never") continue;
+          const outcome = this.#write(event, storage === "versioned", expirationOf(event));
+          if (outcome === "stored" || outcome === "stored-as-history") count++;
+        }
+        const before = this.listKeys();
+        const result = mergeAllowlists(before, allowlist, this.#config);
+        if (!result.ok) throw new RestoreAbort(result.error);
+        const merged = result.state;
+        const allowlistChanged = formatAllowlist(merged) !== formatAllowlist(before);
+        if (allowlistChanged) this.#replaceAllowlist(merged);
+        return { ok: true, events: count, allowlistChanged };
+      });
+    } catch (error) {
+      if (error instanceof RestoreAbort) {
+        return error.line === undefined
+          ? { ok: false, error: error.error }
+          : { ok: false, error: error.error, line: error.line };
+      }
+      throw error;
+    }
+  }
+
   #migrate(): void {
     this.#run(MIGRATIONS_TABLE);
     for (const migration of MIGRATIONS) {
@@ -92,6 +286,44 @@ export class EventStore {
         for (const statement of migration.statements) this.#run(statement);
         this.#run(sql`INSERT INTO schema_migrations (version) VALUES (${migration.version})`);
       });
+    }
+  }
+
+  /** The configured key is the one owner; any other owner becomes retired. */
+  #ensureOwner(now: number): void {
+    const owner = this.#config.owner;
+    const current = this.#keyOf(owner);
+    if (current?.role === "owner") return;
+    for (const key of this.listKeys().keys) {
+      if (key.role === "owner") this.#run(sql`UPDATE allowed_keys SET role = 'retired' WHERE pubkey = ${key.pubkey}`);
+    }
+    this.#run(sql`DELETE FROM allowed_keys WHERE pubkey = ${owner}`);
+    this.#insertKey({ pubkey: owner, role: "owner", addedAt: current?.addedAt ?? now });
+  }
+
+  #keyOf(pubkey: string): AllowedKey | undefined {
+    const [row] = this.#run<{ pubkey: string; role: string; kinds: string; added_at: number }>(
+      sql`SELECT pubkey, role, kinds, added_at FROM allowed_keys WHERE pubkey = ${pubkey}`,
+    ).toArray();
+    return row === undefined ? undefined : toAllowedKey(row);
+  }
+
+  #isRevoked(pubkey: string): boolean {
+    return this.#run(sql`SELECT 1 FROM revoked_keys WHERE pubkey = ${pubkey}`).toArray().length > 0;
+  }
+
+  #insertKey(key: AllowedKey): void {
+    const kinds = JSON.stringify(key.role === "owner" ? [] : key.kinds);
+    this.#run(sql`INSERT INTO allowed_keys (pubkey, role, kinds, added_at)
+      VALUES (${key.pubkey}, ${key.role}, ${kinds}, ${key.addedAt})`);
+  }
+
+  #replaceAllowlist(state: AllowlistState): void {
+    this.#run(sql`DELETE FROM allowed_keys`);
+    this.#run(sql`DELETE FROM revoked_keys`);
+    for (const key of state.keys) this.#insertKey(key);
+    for (const entry of state.revoked) {
+      this.#run(sql`INSERT INTO revoked_keys (pubkey, revoked_at) VALUES (${entry.pubkey}, ${entry.revokedAt})`);
     }
   }
 
@@ -201,8 +433,12 @@ export class EventStore {
     if (lists.some((condition) => condition.values.length === 0)) return [];
 
     const fixed: Sql[] = [sql`(e.expiration IS NULL OR e.expiration > ${now})`];
-    // ST-4: a filter with ids also returns replaced versions.
-    if (filter.ids === undefined) fixed.push(sql`e.is_latest = 1`);
+    // ST-4: a filter with ids also returns replaced versions. ST-5: any other filter returns only events of keys
+    // that may write, so the events of retired and revoked keys are history.
+    if (filter.ids === undefined) {
+      fixed.push(sql`e.is_latest = 1`);
+      fixed.push(sql`e.pubkey IN (SELECT pubkey FROM allowed_keys WHERE role IN ('owner', 'importer'))`);
+    }
     if (filter.since !== undefined) fixed.push(sql`e.created_at >= ${filter.since}`);
     if (filter.until !== undefined) fixed.push(sql`e.created_at <= ${filter.until}`);
 
@@ -371,4 +607,33 @@ function parseAddress(value: string): Address | undefined {
   // Replaceable kinds have the address `<kind>:<pubkey>:`.
   if (classifyKind(kind) === "replaceable" && d !== "") return undefined;
   return { pubkey, kind, d };
+}
+
+function toAllowedKey(row: { pubkey: string; role: string; kinds: string; added_at: number }): AllowedKey {
+  if (!isKeyRole(row.role)) throw new Error("allowed_keys holds an unknown role");
+  if (row.role === "owner") return { pubkey: row.pubkey, role: "owner", addedAt: row.added_at };
+  const kinds: unknown = JSON.parse(row.kinds);
+  if (!Array.isArray(kinds)) throw new Error("allowed_keys holds malformed kinds");
+  const values: unknown[] = kinds;
+  return {
+    pubkey: row.pubkey,
+    role: row.role,
+    kinds: values.filter((kind): kind is number => typeof kind === "number"),
+    addedAt: row.added_at,
+  };
+}
+
+/** ST-6: a restored event is checked for its id and signature only, not the limits a received event meets. */
+function verifyRestoredEvent(text: string): VerifiedEvent | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const unlimited = Number.POSITIVE_INFINITY;
+  const result = verifyEventObject(value, {
+    limits: { maxTags: unlimited, maxTagValueBytes: unlimited, maxFutureSeconds: unlimited },
+  });
+  return result.ok ? result.event : undefined;
 }
