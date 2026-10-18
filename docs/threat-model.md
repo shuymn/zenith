@@ -48,6 +48,9 @@ file exists and names the invariant's ID.
   holds all relay state and uses the hibernation API.
 - Blossom runs as a separate Worker that stores blobs in a private R2 bucket. Its allowlist comes from the Vault DO,
   which is the single source of truth for allowed keys.
+- The relay URL is public. The owner lists it as a write relay in their NIP-65 relay list (kind 10002), so clients
+  write the owner's events only there and anyone can find it. Nothing depends on the URL being secret: reads are closed
+  by NIP-42 as the owner (RD-1), and the public relays in the list are read relays, for replies and mentions.
 - A backup cron copies events and blobs daily to a separate bucket with a 30-day bucket lock.
 - Importers run as cron Workers with their keys in Worker secrets (on hold; see DATA-3).
 
@@ -643,6 +646,7 @@ land, signed events published outside this repository and `relay-tester` run aga
 | NIP-62 requests to vanish are refused                                  | Honoring one would erase the signer's history up to the request, deletion requests included | the vault holds data a third party may ask to erase |
 | Backups stay inside Cloudflare                                         | The risks covered are mistaken deletion, bugs and key leaks, not platform loss              | platform loss is in scope                           |
 | An id computed with the `JSON.stringify` form is accepted (EV-2)       | Common clients compute ids this way; it is still a hash of the same fields                  | clients converge on the NIP-01 rule                 |
+| Strangers' clients connect and are refused at `AUTH` (R1, R2)          | The relay is in the public kind 10002; each connection wakes the DO until RES-4 closes it   | unauthenticated connections cost noticeably (A5)    |
 | A signed admin request can be sent again within 60 seconds (OPS-1)     | TLS hides the header, invocation logs are off, and every command is harmless to repeat      | a command that is not harmless to repeat is added   |
 
 ## How to use

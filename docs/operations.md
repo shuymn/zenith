@@ -80,6 +80,13 @@ positional arguments and deploy for real; the script refuses a `--` between opti
 After the first deployment, open `wss://<RELAY_HOST>/` with a client, authenticate as the owner, and run a first
 backup through the admin route (below) to check the bucket binding.
 
+## Clients
+
+List the relay in the owner's NIP-65 relay list (kind 10002) as a write relay only (`["r", "wss://<RELAY_HOST>/",
+"write"]`), and the public relays as read relays. Clients then write the owner's events only to the relay, read the
+owner's own events from it after `AUTH`, and receive replies and mentions on the public read relays. Others' clients
+that look for the owner's events connect, are refused at `AUTH`, and are closed after 30 seconds (RES-4).
+
 ## Logs (DATA-1)
 
 Workers Logs keep the Worker's `console` output, which only `logEvent` writes: an event name and reason codes. The
