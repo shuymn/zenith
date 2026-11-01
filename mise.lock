@@ -54,19 +54,21 @@ url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/
 provenance = "cosign"
 
 [[tools."github:fiatjaf/nak"]]
-version = "0.21.2"
+version = "0.22.0"
 backend = "github:fiatjaf/nak"
 specifiers = ["0"]
 
 [tools."github:fiatjaf/nak"."platforms.linux-x64"]
-checksum = "sha256:0acd56fea6ab1b9a0a68c8615670c6f8eff9e8878922442e387b94ee15266bb8"
-url = "https://github.com/fiatjaf/nak/releases/download/v0.21.2/nak-v0.21.2-linux-amd64"
-url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/622094962"
+checksum = "sha256:f4cb05c42e2cab2d85f436c42aece1f6e10499e1166b6e0ad1fd3e3973b70712"
+checksum_source = "mise-versions"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.22.0/nak-v0.22.0-linux-amd64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/688819221"
 
 [tools."github:fiatjaf/nak"."platforms.macos-arm64"]
-checksum = "sha256:405cda08f961e00f29abcd151ed230a1505a87045b3ddaed1649c5e58db109ea"
-url = "https://github.com/fiatjaf/nak/releases/download/v0.21.2/nak-v0.21.2-darwin-arm64"
-url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/622094909"
+checksum = "sha256:e2749f50a337b12e6062b3ab255ebc969a71fbf2f697ff6260e2d44c06850079"
+checksum_source = "mise-versions"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.22.0/nak-v0.22.0-darwin-arm64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/688818848"
 
 [[tools.node]]
 version = "24.22.2"
