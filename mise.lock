@@ -37,38 +37,38 @@ url_api = "https://api.github.com/repos/betterleaks/betterleaks/releases/assets/
 provenance = "cosign"
 
 [[tools.ghalint]]
-version = "1.5.7"
+version = "1.6.0"
 backend = "aqua:suzuki-shunsuke/ghalint"
 specifiers = ["1"]
 
 [tools.ghalint."platforms.linux-x64"]
-checksum = "sha256:b8eaba77baea50540caf43e81ea32049ca07fecba267a84c78a27ce5a86631a3"
-url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.5.7/ghalint_1.5.7_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/676756679"
+checksum = "sha256:eda1af79c1a4a31c2de5831cd1333ad582fa6fa72015f8e9c1c4525d550c1d35"
+url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.6.0/ghalint_1.6.0_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/694554144"
 provenance = "cosign"
 
 [tools.ghalint."platforms.macos-arm64"]
-checksum = "sha256:c3abc5c3a8eedafbeb3d3d2d27a2757876fd5d4937c7306a3932906d578f968a"
-url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.5.7/ghalint_1.5.7_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/676756660"
+checksum = "sha256:427acb85cb6cdda8828bf46643825b47cb46e6d2d5d3fa4f60b7bdfee194d2c7"
+url = "https://github.com/suzuki-shunsuke/ghalint/releases/download/v1.6.0/ghalint_1.6.0_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/suzuki-shunsuke/ghalint/releases/assets/694554130"
 provenance = "cosign"
 
 [[tools."github:fiatjaf/nak"]]
-version = "0.22.0"
+version = "0.22.1"
 backend = "github:fiatjaf/nak"
 specifiers = ["0"]
 
 [tools."github:fiatjaf/nak"."platforms.linux-x64"]
-checksum = "sha256:f4cb05c42e2cab2d85f436c42aece1f6e10499e1166b6e0ad1fd3e3973b70712"
+checksum = "sha256:9a6323706eea327a53c3e8aa28132bf78f903ee0ad3ddcacaeb24a1ca3aa9f5b"
 checksum_source = "mise-versions"
-url = "https://github.com/fiatjaf/nak/releases/download/v0.22.0/nak-v0.22.0-linux-amd64"
-url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/688819221"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.22.1/nak-v0.22.1-linux-amd64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/696228796"
 
 [tools."github:fiatjaf/nak"."platforms.macos-arm64"]
-checksum = "sha256:e2749f50a337b12e6062b3ab255ebc969a71fbf2f697ff6260e2d44c06850079"
+checksum = "sha256:1d936fbd2e16a1480f5d3234acad7746391984c2dc84a38367337697c618347e"
 checksum_source = "mise-versions"
-url = "https://github.com/fiatjaf/nak/releases/download/v0.22.0/nak-v0.22.0-darwin-arm64"
-url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/688818848"
+url = "https://github.com/fiatjaf/nak/releases/download/v0.22.1/nak-v0.22.1-darwin-arm64"
+url_api = "https://api.github.com/repos/fiatjaf/nak/releases/assets/696228979"
 
 [[tools.node]]
 version = "24.22.2"
