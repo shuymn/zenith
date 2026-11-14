@@ -25,8 +25,8 @@ catalogs:
       specifier: 3.3.1
       version: 3.3.1
     nostr-tools:
-      specifier: 2.25.5
-      version: 2.25.5
+      specifier: 2.26.0
+      version: 2.26.0
     typescript:
       specifier: 7.0.2
       version: 7.0.2
@@ -77,7 +77,7 @@ importers:
         version: 4.10.2
       nostr-tools:
         specifier: 'catalog:'
-        version: 2.25.5(nostr-wasm@0.1.0)(typescript@7.0.2)
+        version: 2.26.0(nostr-wasm@0.1.0)(typescript@7.0.2)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1538,8 +1538,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nostr-tools@2.25.5:
-    resolution: {integrity: sha512-CpDtEU1BM2AYjUwB8YnDM30unve8Uaf+FpB2P5qTP0RrB1Oz9zGzGD+n3jh6DSNXSg1Cpq7M6N6eazTYCJZ1HA==}
+  nostr-tools@2.26.0:
+    resolution: {integrity: sha512-PMy//IuirMQR61o44UvjKQcQ4C7puKLxELHGv2ghn16P4NvmgdOMX7kyr9VZW9SxHeZHrSTiNoLeRe3fDbE4RA==}
     peerDependencies:
       nostr-wasm: 0.1.0
       typescript: '>=5.0.0'
@@ -2867,7 +2867,7 @@ snapshots:
 
   nanoid@3.3.20: {}
 
-  nostr-tools@2.25.5(nostr-wasm@0.1.0)(typescript@7.0.2):
+  nostr-tools@2.26.0(nostr-wasm@0.1.0)(typescript@7.0.2):
     dependencies:
       '@noble/ciphers': 2.1.1
       '@noble/curves': 2.0.1
