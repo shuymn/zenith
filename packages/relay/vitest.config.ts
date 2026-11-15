@@ -26,6 +26,10 @@ export default defineConfig({
           include: ["src/**/*.test.ts"],
           exclude: [WEBSOCKET_TESTS],
           sequence: { groupOrder: 0 },
+          // The files run in parallel. On the CI runner, backup.test.ts and store.test.ts take 2–4 s each, and execution
+          // delays occasionally pushed their property tests, and once a small R2 test, past the default 5 s; a rerun of
+          // the same commit passed. Locally the property tests take under 1 s.
+          testTimeout: 30_000,
         },
       },
       // The Workers Vitest integration does not support Durable Object WebSockets with per-file storage isolation;
