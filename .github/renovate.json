@@ -3,5 +3,18 @@
   "extends": ["github>shuymn/github-actions#main"],
   "mise": {
     "enabled": false
-  }
+  },
+  "separateMultipleMinor": false,
+  "separateMinorPatch": false,
+  "packageRules": [
+    {
+      "description": "Group non-major updates of the development tools into one automerged PR; runtime dependencies (list them here when added) and Node.js keep their own PRs",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": ["!@noble/curves", "!@noble/hashes", "!valibot", "!node"],
+      "groupName": "development tools",
+      "groupSlug": "dev-tools",
+      "automerge": true
+    }
+  ]
 }
