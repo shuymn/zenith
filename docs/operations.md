@@ -87,6 +87,12 @@ List the relay in the owner's NIP-65 relay list (kind 10002) as a write relay on
 owner's own events from it after `AUTH`, and receive replies and mentions on the public read relays. Others' clients
 that look for the owner's events connect, are refused at `AUTH`, and are closed after 30 seconds (RES-4).
 
+Bots that find the relay in kind 10002 reconnect after each RES-4 close, and each connection is billed as a DO request
+plus an alarm (A5). Almost all of them send no `User-Agent`, so a WAF custom rule on the zone blocks those requests at
+the edge, before the Worker runs: `(http.host eq "<RELAY_HOST>" and http.user_agent eq "")`, action Block. Owner
+clients, `curl`, and Node and Bun `fetch` send a `User-Agent`; a client that does not, such as a Worker opening a
+WebSocket with `fetch`, must set the header.
+
 ## Logs (DATA-1)
 
 Workers Logs keep the Worker's `console` output, which only `logEvent` writes: an event name and reason codes. The

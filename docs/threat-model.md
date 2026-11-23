@@ -646,7 +646,7 @@ land, signed events published outside this repository and `relay-tester` run aga
 | NIP-62 requests to vanish are refused                                  | Honoring one would erase the signer's history up to the request, deletion requests included | the vault holds data a third party may ask to erase |
 | Backups stay inside Cloudflare                                         | The risks covered are mistaken deletion, bugs and key leaks, not platform loss              | platform loss is in scope                           |
 | An id computed with the `JSON.stringify` form is accepted (EV-2)       | Common clients compute ids this way; it is still a hash of the same fields                  | clients converge on the NIP-01 rule                 |
-| Strangers' clients connect and are refused at `AUTH` (R1, R2)          | The relay is in the public kind 10002; each connection wakes the DO until RES-4 closes it   | unauthenticated connections cost noticeably (A5)    |
+| Strangers' clients connect and are refused at `AUTH` (R1, R2)          | Kind 10002 is public; clients with no `User-Agent` are blocked at the edge, others by RES-4 | unauthenticated connections cost noticeably (A5)    |
 | A signed admin request can be sent again within 60 seconds (OPS-1)     | TLS hides the header, invocation logs are off, and every command is harmless to repeat      | a command that is not harmless to repeat is added   |
 
 ## How to use
