@@ -3,7 +3,7 @@ packages:
 
 catalog:
   "@cloudflare/vitest-plugin": 1.9.0
-  "@cloudflare/workers-types": 5.20261121.1
+  "@cloudflare/workers-types": 5.20261123.1
   "@noble/curves": 2.4.0
   "@noble/hashes": 2.4.0
   fast-check: 4.11.0
